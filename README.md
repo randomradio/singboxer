@@ -4,300 +4,347 @@ A terminal UI (TUI) application for managing sing-box configurations on servers.
 
 ## Table of Contents
 
-- [Quick Start (Server Deployment)](#quick-start-server-deployment)
+- [How-To Guide](#how-to-guide)
 - [Download Binaries](#download-binaries)
 - [Upload to Server](#upload-to-server)
+- [Complete Setup Walkthrough](#complete-setup-walkthrough)
 - [Usage](#usage)
 - [CLI Commands](#cli-commands)
 - [Running as a Service](#running-as-a-service)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
-## Quick Start (Server Deployment)
+## How-To Guide
 
-### Step 1: Download sing-box Binary
+This guide walks you through setting up singboxer and sing-box on your server to start using a proxy.
 
-Go to the [sing-box releases](https://github.com/SagerNet/sing-box/releases) page and download the appropriate version for your server:
+### Overview
 
-```bash
-# For Linux AMD64 (most servers)
-wget https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-linux-amd64.tar.gz
+You will:
+1. Download sing-box and singboxer binaries
+2. Upload them to your server
+3. Import your subscription (from URL or file)
+4. Select and test proxies
+5. Start sing-box with your selected proxy
+6. Use the proxy (transparent TUN mode)
 
-# Extract
-tar -xzf sing-box-1.11.7-linux-amd64.tar.gz
-
-# The binary is now at: sing-box-1.11.7-linux-amd64/sing-box
-```
-
-**Alternative: Using the installation script**
-```bash
-curl -Lo /usr/local/bin/sing-box https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-linux-amd64.tar.gz | tar -xzf - sing-box-1.11.7-linux-amd64/sing-box --strip-components=1
-chmod +x /usr/local/bin/sing-box
-```
-
-### Step 2: Build or Download singboxer
-
-**Option A: Build from source (requires Rust)**
-```bash
-git clone <your-repo-url>
-cd singboxer
-cargo build --release
-# Binary is at: target/release/singboxer
-```
-
-**Option B: Download pre-built binary** (if you have one)
-```bash
-# Download and make executable
-wget https://your-server/singboxer
-chmod +x singboxer
-```
-
-### Step 3: Upload to Your Server
-
-```bash
-# Using scp
-scp singbox sing-box-1.11.7-linux-amd64/sing-box user@your-server:/home/user/
-
-# Or using rsync
-scp target/release/singboxer user@your-server:/home/user/
-```
-
-### Step 4: Setup on Server
-
-SSH into your server and run:
-
-```bash
-# Create directory for the binaries
-mkdir -p ~/singbox
-cd ~/singbox
-
-# Move binaries here
-mv ~/singbox ~/singbox/
-mv ~/sing-box ~/singbox/  # or wherever you downloaded it
-
-# Make them executable
-chmod +x singbox singboxer
-
-# Verify installation
-./sing-box version
-./singboxer --help
-```
-
-### Step 5: Add Your Subscription
-
-```bash
-# Add your subscription URL
-./singboxer add "MyProvider" "https://your-subscription-url"
-```
-
-### Step 6: Start Using singboxer
-
-```bash
-# Launch the TUI
-./singboxer
-
-# Or run it in the background for remote access
-nohup ./singboxer &
-```
+**End Result:** All your server traffic goes through the selected proxy. You can switch proxies anytime without restarting.
 
 ---
 
 ## Download Binaries
 
-### sing-box
+### 1. Download sing-box
 
-| Platform | Download Link |
-|----------|---------------|
-| Linux AMD64 | [sing-box-1.11.7-linux-amd64.tar.gz](https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-linux-amd64.tar.gz) |
-| Linux ARM64 | [sing-box-1.11.7-linux-arm64.tar.gz](https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-linux-arm64.tar.gz) |
-| macOS AMD64 | [sing-box-1.11.7-darwin-amd64.tar.gz](https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-darwin-amd64.tar.gz) |
-| macOS ARM64 | [sing-box-1.11.7-darwin-arm64.tar.gz](https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-darwin-arm64.tar.gz) |
+Go to [sing-box releases](https://github.com/SagerNet/sing-box/releases) and download the version for your server:
 
-Check [latest releases](https://github.com/SagerNet/sing-box/releases) for the newest version.
+| Platform | Download Command |
+|----------|-----------------|
+| Linux AMD64 | `wget https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-linux-amd64.tar.gz` |
+| Linux ARM64 | `wget https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-linux-arm64.tar.gz` |
+| macOS AMD64 | `wget https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-darwin-amd64.tar.gz` |
+| macOS ARM64 | `wget https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-darwin-arm64.tar.gz` |
 
-### singboxer
+Extract:
+```bash
+tar -xzf sing-box-1.11.7-linux-amd64.tar.gz
+# Binary is at: sing-box-1.11.7-linux-amd64/sing-box
+```
 
-If you don't have Rust installed, build locally and upload:
+### 2. Build singboxer
 
 ```bash
-# On your local machine
+# Clone or navigate to the repo
+cd singboxer
+
+# Build release version
 cargo build --release
-scp target/release/singboxer user@server:~/singbox/
+
+# Binary is at: target/release/singboxer
 ```
 
 ---
 
 ## Upload to Server
 
-### Method 1: Using scp
+### Option 1: Using scp (from your local machine)
 
 ```bash
-# From your local machine
-scp target/release/singboxer user@your-server:~/singbox/
-scp sing-box-1.11.7-linux-amd64/sing-box user@your-server:~/singbox/
+# Upload both binaries
+scp target/release/singboxer user@your-server:/home/user/singbox/
+scp sing-box-1.11.7-linux-amd64/sing-box user@your-server:/home/user/singbox/
 ```
 
-### Method 2: Using rsync
+### Option 2: Direct download on server
 
 ```bash
-rsync -avz target/release/singboxer user@your-server:~/singbox/
-rsync -avz sing-box-1.11.7-linux-amd64/sing-box user@your-server:~/singbox/
-```
-
-### Method 3: Direct download on server
-
-```bash
-# SSH into your server first
+# SSH into your server
 ssh user@your-server
 
-# Download sing-box
-cd ~
-mkdir -p singbox
-cd singbox
+# Create directory
+mkdir -p ~/singbox
+cd ~/singbox
+
+# Download sing-box directly
 wget https://github.com/SagerNet/sing-box/releases/download/v1.11.7/sing-box-1.11.7-linux-amd64.tar.gz
 tar -xzf sing-box-1.11.7-linux-amd64.tar.gz
 mv sing-box-1.11.7-linux-amd64/sing-box sing-box
-chmod +x sing-box
 
-# Download singboxer (or upload via scp)
-wget https://your-cdn/singboxer
-chmod +x singboxer
+# Upload singboxer via scp (or build on server if you have Rust)
+# From local machine:
+scp target/release/singboxer user@your-server:~/singbox/
 ```
 
 ---
 
-## Usage
+## Complete Setup Walkthrough
 
-### First Time Setup
+### Step 1: Prepare Your Server
 
 ```bash
-# SSH to your server
+# SSH into your server
 ssh user@your-server
 
-# Navigate to your singbox directory
+# Navigate to singbox directory
 cd ~/singbox
 
-# Add your subscription
-./singboxer add "MyProvider" "https://subscription-url.com"
+# Make binaries executable
+chmod +x singbox singboxer
 
-# Launch the TUI
+# Verify they work
+./sing-box version
+./singboxer --help
+```
+
+**Expected output:**
+```
+sing-box 1.11.7 ...
+```
+
+### Step 2: Import Your Subscription
+
+You have two options: import from URL or from a file.
+
+#### Option A: Import from Subscription URL
+
+```bash
+# Example: Clash subscription
+./singboxer add "MyProvider" "https://my-provider.com/clash"
+
+# Example: Shadowsocks subscription
+./singboxer add "MySS" "https://my-ss.com/sub"
+```
+
+#### Option B: Import from File
+
+If you have a subscription file (Clash YAML, etc.):
+
+```bash
+# Upload your file first
+scp ~/Downloads/config.yaml user@server:~/singbox/
+
+# On the server, import it
+./singboxer import "MyProvider" "config.yaml"
+```
+
+Or from the TUI:
+```bash
+./singboxer
+
+# Press 'i' to import (coming soon)
+# For now, use CLI command above
+```
+
+### Step 3: Launch singboxer TUI
+
+```bash
 ./singboxer
 ```
 
-### TUI Key Bindings
+You'll see:
+```
+┌─────────────────────────────────────────┐
+│     singboxer - sing-box: Stopped      │
+├──────────────────┬──────────────────────┤
+│ Subscriptions    │ Proxies              │
+│ [l]              │ [p]                  │
+│                  │                      │
+│ MyProvider       │ (no proxies loaded)  │
+│                  │                      │
+└──────────────────┴──────────────────────┘
+│ a:add s:save S:start r:reload t:test q:quit ?:help
+└─────────────────────────────────────────┘
+```
 
-| Key | Action |
-|-----|--------|
-| **Navigation** |
-| `Tab` / `←` / `→` | Switch panels (Subscriptions / Proxies) |
-| `↑` / `↓` | Navigate lists |
-| **Actions** |
-| `Enter` | Load subscription / Activate proxy |
-| `S` | Start sing-box |
-| `x` | Stop sing-box |
-| `R` | Restart sing-box |
-| `s` | Save config to file |
-| `r` | Reload subscription |
-| `t` | Test all proxy latencies |
-| `T` | Test selected proxy |
-| `d` | Delete selected subscription |
-| `?` / `Esc` | Toggle help |
-| `q` | Quit |
+### Step 4: Load Your Proxies
 
-### Typical Workflow
+1. Use arrow keys to select your subscription
+2. Press `Enter` to load proxies
+3. The Proxies panel will populate with available servers
 
-1. **Launch singboxer**
-   ```bash
-   ./singboxer
-   ```
+### Step 5: Test Proxy Latencies
 
-2. **Load Proxies** - Select your subscription, press `Enter`
+```text
+Press: t
+```
 
-3. **Test Latencies** - Press `t` to test all proxies
+This tests all proxies concurrently and shows:
+- 🟢 Green: < 100ms (fast)
+- 🟡 Yellow: 100-300ms (good)
+- 🟠 Orange: 300-1000ms (slow)
+- 🔴 Red: > 1000ms or timeout
 
-4. **Select Fastest Proxy** - Navigate to the proxy with lowest latency
+### Step 6: Select a Proxy
 
-5. **Start sing-box** - Press `S` to start with selected proxy
+1. Navigate to the Proxies panel (press `→` or click)
+2. Use arrow keys to select the fastest proxy
+3. Note the proxy name (you'll activate it next)
 
-6. **Use Your Proxy** - The TUN mode is now active, all traffic is proxied
+### Step 7: Start sing-box
 
-7. **Switch Proxies** - Select a different proxy and press `Enter` (no restart!)
+```text
+Press: S
+```
 
-8. **Stop** - Press `x` to stop sing-box, or `q` to quit singboxer
+This:
+1. Generates a sing-box config with your selected proxy
+2. Starts sing-box in TUN mode (transparent proxy)
+3. Header shows: `sing-boxer - sing-box: Running (PID: xxx)`
+
+**Your server is now using the proxy!** All traffic (except local) goes through it.
+
+### Step 8: Verify It's Working
+
+```bash
+# Check your IP (should show proxy location)
+curl https://ipinfo.io/ip
+
+# Check sing-box is running
+ps aux | grep sing-box
+
+# Or use singboxer status
+# The header shows running state
+```
+
+### Step 9: Switch Proxies (Anytime!)
+
+1. Select a different proxy in the Proxies panel
+2. Press `Enter`
+3. sing-box switches instantly (no restart needed)
+
+### Step 10: Stop When Done
+
+```text
+Press: x
+```
+
+Or quit singboxer:
+```text
+Press: q
+```
+
+---
+
+## Using sing-box Directly
+
+Once you have a config generated, you can also run sing-box manually:
+
+### Generated Config Location
+
+```bash
+~/.config/singboxer/singbox/config.json
+```
+
+### Manual Execution
+
+```bash
+# Run sing-box with generated config
+./sing-box run -c ~/.config/singboxer/singbox/config.json
+
+# Run in background
+nohup ./sing-box run -c ~/.config/singboxer/singbox/config.json &
+
+# Check logs
+tail -f ~/.local/var/log/sing-box/*
+```
 
 ---
 
 ## CLI Commands
 
-You can also use CLI commands without the TUI:
+All available CLI commands:
 
 ```bash
-# Add a subscription
-./singboxer add "MyProvider" "https://subscription-url"
+# Launch TUI (default)
+./singboxer
 
-# List all subscriptions
+# Add subscription from URL
+./singboxer add "Name" "https://subscription-url"
+
+# Import subscription from file
+./singboxer import "Name" "/path/to/config.yaml"
+
+# List subscriptions
 ./singboxer list
 
-# Remove a subscription
-./singboxer remove "MyProvider"
+# Remove subscription
+./singboxer remove "Name"
 
-# Fetch and display proxies from a URL
+# Fetch and show proxies from URL (without adding)
 ./singboxer fetch "https://subscription-url"
 
-# Generate config from a subscription URL
-./singboxer generate "https://subscription-url" -o config.json
+# Generate config to file (without starting)
+./singboxer generate "https://subscription-url" -o myconfig.json
 
-# Run the TUI
-./singboxer
-# or explicitly
-./singboxer ui
+# Show help
+./singboxer --help
 ```
 
 ---
 
-## Configuration Files
+## TUI Key Bindings
 
-All configurations are stored in `~/.config/singboxer/`:
-
-```
-~/.config/singboxer/
-├── subscriptions.json    # Your subscription URLs
-└── singbox/
-    └── config.json       # Generated sing-box config
-```
-
-### Manual Configuration
-
-You can also manually edit `subscriptions.json`:
-
-```json
-[
-  {
-    "name": "MyProvider",
-    "url": "https://subscription-url",
-    "type": "clash",
-    "enabled": true
-  }
-]
-```
+| Key | Action |
+|-----|--------|
+| **Navigation** | |
+| `Tab` / `←` / `→` | Switch panels (Subscriptions ↔ Proxies) |
+| `↑` / `↓` | Navigate items in current panel |
+| **Subscription Actions** | |
+| `Enter` | Load proxies from selected subscription |
+| `r` | Reload/refresh selected subscription |
+| `d` | Delete selected subscription |
+| **Proxy Actions** | |
+| `Enter` | Activate selected proxy (requires sing-box running) |
+| `t` | Test **all** proxy latencies |
+| `T` | Test **selected** proxy latency |
+| **sing-box Control** | |
+| `S` | Start sing-box with selected proxy |
+| `x` | Stop sing-box |
+| `R` | Restart sing-box with new config |
+| **Config** | |
+| `s` | Save config to file (without starting) |
+| **Other** | |
+| `?` / `Esc` | Show/hide help popup |
+| `q` | Quit singboxer |
 
 ---
 
 ## Running as a Service
 
-To run sing-box as a system service (auto-start on boot):
+To auto-start sing-box on boot:
 
-### Create systemd service
+### Create systemd Service
 
 ```bash
 sudo nano /etc/systemd/system/singbox.service
 ```
 
-Add the following:
+Add this content:
 
 ```ini
 [Unit]
-Description=sing-box Service
+Description=sing-box Proxy Service
 After=network.target
 
 [Service]
@@ -308,7 +355,7 @@ ExecStart=/home/your-username/singbox/sing-box run -c /home/your-username/.confi
 Restart=on-failure
 RestartSec=5s
 
-# For TUN mode, need CAP_NET_ADMIN
+# Required for TUN mode
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 
@@ -316,68 +363,168 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 WantedBy=multi-user.target
 ```
 
-Enable and start:
+### Enable and Start
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable singbox
 sudo systemctl start singbox
+
+# Check status
 sudo systemctl status singbox
+
+# View logs
+sudo journalctl -u singbox -f
 ```
 
-### Using singboxer for management only
+### Using singboxer with systemd
 
-If you want to manage the config but run sing-box separately:
+1. Use singboxer to update config (`s` to save)
+2. Restart service: `sudo systemctl restart singbox`
+3. Or use singboxer's built-in control if Clash API is enabled
+
+---
+
+## Subscription File Import
+
+singboxer can import subscriptions from local files:
+
+### Supported File Formats
+
+- **Clash YAML** (`.yaml`, `.yml`) - Most common
+- **Shadowsocks JSON** (`.json`)
+- **V2RayN URI list** (`.txt`) - One proxy per line (vmess://, vless://, etc.)
+
+### Import Methods
+
+**Method 1: CLI (Recommended)**
+```bash
+# Import a Clash config
+./singboxer import "MyProvider" "/path/to/clash_config.yaml"
+
+# Import a Shadowsocks list
+./singboxer import "MySS" "/path/to/ss_list.txt"
+```
+
+**Method 2: Manual Configuration**
+
+Edit `~/.config/singboxer/subscriptions.json`:
+
+```json
+[
+  {
+    "name": "MyProvider",
+    "url": "file:///home/user/singbox/config.yaml",
+    "type": "auto",
+    "enabled": true
+  }
+]
+```
+
+Then reload in TUI (press `r` on the subscription).
+
+### Upload and Import Workflow
 
 ```bash
-# Use singboxer to generate/select configs
-./singboxer
+# On your local machine
+scp ~/Downloads/my-provider.yaml user@server:~/singbox/
 
-# Then run sing-box manually with the generated config
-./sing-box run -c ~/.config/singboxer/singbox/config.json
+# On the server
+cd ~/singbox
+./singboxer import "MyProvider" "my-provider.yaml"
+
+# Launch TUI
+./singboxer
+# Select subscription, press Enter to load
+```
+
+---
+
+## Configuration Files
+
+All data stored in `~/.config/singboxer/`:
+
+```
+~/.config/singboxer/
+├── subscriptions.json    # Your subscriptions (URL and file-based)
+└── singbox/
+    └── config.json       # Generated sing-box config
+```
+
+### subscriptions.json Format
+
+```json
+[
+  {
+    "name": "MyProvider",
+    "url": "https://example.com/clash",
+    "type": "clash",
+    "enabled": true
+  },
+  {
+    "name": "LocalFile",
+    "url": "file:///home/user/config.yaml",
+    "type": "auto",
+    "enabled": true
+  }
+]
 ```
 
 ---
 
 ## Troubleshooting
 
-### sing-box not found
+### "sing-box not found"
 
-```
-Error: sing-box not found
-```
+**Error:** `sing-box: Not Installed` in header
 
-**Solution:** Install sing-box or make sure it's in your PATH:
+**Solutions:**
 ```bash
-# Add to PATH
+# Check if sing-box is in PATH
+which sing-box
+
+# If not, add to PATH
 export PATH=$PATH:~/singbox
 
-# Or create a symlink
+# Or create symlink
 sudo ln -s ~/singbox/sing-box /usr/local/bin/sing-box
 ```
 
-### Permission denied with TUN mode
+### "Permission denied" with TUN mode
 
-```
-Error: failed to initialize tun
-```
+**Error:** `failed to initialize tun`
 
-**Solution:** Run with sudo or add capabilities:
+**Solutions:**
 ```bash
 # Run with sudo
 sudo ./sing-box run -c config.json
 
 # Or add capabilities (recommended)
-sudo setcap cap_net_admin,cap_net_raw+ep /path/to/sing-box
+sudo setcap cap_net_admin,cap_net_raw+ep ~/singbox/sing-box
 ```
 
-### Can't connect to Clash API
+### "Can't connect to Clash API"
 
-```
-Error: Failed to connect to Clash API
-```
+**Error:** Proxy switching fails
 
-**Solution:** Make sure sing-box is running and Clash API is enabled in the config.
+**Solutions:**
+1. Make sure sing-box is running
+2. Check Clash API is enabled in generated config
+3. Verify API port (default: 9090) is not blocked
+
+### Subscription not loading
+
+**Check:**
+```bash
+# Test the URL directly
+curl -L "your-subscription-url"
+
+# For files, check path
+ls -la /path/to/file
+
+# Check singboxer logs
+RUST_LOG=debug ./singboxer
+```
 
 ---
 
@@ -385,20 +532,23 @@ Error: Failed to connect to Clash API
 
 ### Supported Subscription Formats
 
-- **Clash YAML** - Most common format
-- **Shadowsocks/SIP008** - URL list format
-- **V2RayN URIs** - vmess://, vless://, trojan://, ss://
-- **Base64 encoded** - Auto-detection
+| Format | Extensions | Import Method |
+|--------|------------|----------------|
+| Clash YAML | `.yaml`, `.yml` | URL, file |
+| Shadowsocks | `.json` | URL, file |
+| V2RayN URIs | `.txt` | URL, file |
+| Base64 | Any | URL (auto-detected) |
 
 ### Supported Proxy Types
 
-- Shadowsocks
+- Shadowsocks (SS)
 - VMess
 - VLESS (with Reality)
 - Trojan
-- Hysteria2
+- Hysteria2 / H2
 - SOCKS5
 - HTTP/HTTPS
+- TUIC
 
 ### Generated Config Features
 
@@ -407,15 +557,42 @@ Error: Failed to connect to Clash API
 - **HTTP inbound** - Local proxy on `127.0.0.1:7891`
 - **Selector outbound** - Manual proxy selection
 - **URLTest outbound** - Auto-select fastest proxy
-- **Clash API** - Control via dashboards (Yacd, MetaCubeXD)
-- **Routing rules** - Direct for private/CN IPs/domains
+- **Clash API** - Control via dashboards (port 9090)
+- **Routing rules** - Direct connection for private/CN IPs/domains
 
 ### Latency Testing
 
-- Color-coded results (green/yellow/orange/red)
-- Concurrent testing (up to 5 at once)
-- TCP connection test for protocol proxies
-- Full HTTP test for SOCKS/HTTP proxies
+- 🟢 Green: < 100ms (fast)
+- 🟡 Yellow: 100-300ms (good)
+- 🟠 Orange: 300-1000ms (slow)
+- 🔴 Red: > 1000ms or timeout
+- Tests up to 5 proxies concurrently
+
+---
+
+## Quick Reference Card
+
+```
+┌─────────────────────────────────────────────┐
+│  SINGBOXER QUICK START                      │
+├─────────────────────────────────────────────┤
+│  1. Add sub:  ./singboxer add "Name" "url"  │
+│  2. Import:    ./singboxer import "Name" file│
+│  3. Launch:    ./singboxer                   │
+│  4. Load:      Select sub, Enter            │
+│  5. Test:      Press t                      │
+│  6. Start:     Press S                      │
+│  7. Switch:    Select proxy, Enter          │
+│  8. Stop:      Press x                      │
+│  9. Quit:      Press q                      │
+├─────────────────────────────────────────────┤
+│  Generated config:                          │
+│  ~/.config/singboxer/singbox/config.json   │
+│                                             │
+│  Run manually:                               │
+│  ./sing-box run -c config.json              │
+└─────────────────────────────────────────────┘
+```
 
 ---
 

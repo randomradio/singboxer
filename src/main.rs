@@ -18,12 +18,19 @@ struct Cli {
 enum Commands {
     /// Launch the TUI
     Ui {},
-    /// Add a subscription
+    /// Add a subscription from URL
     Add {
         /// Subscription name
         name: String,
         /// Subscription URL
         url: String,
+    },
+    /// Import a subscription from file
+    Import {
+        /// Subscription name
+        name: String,
+        /// Path to subscription file (Clash YAML, etc.)
+        file: String,
     },
     /// Remove a subscription by name
     Remove {
@@ -64,6 +71,27 @@ fn main() -> Result<()> {
         Some(Commands::Add { name, url }) => {
             let mut app = singboxer::App::new()?;
             app.add_subscription(name, url);
+            println!("Subscription added successfully.");
+        }
+        Some(Commands::Import { name, file }) => {
+            let content = std::fs::read_to_string(&file)
+                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+
+            let proxies = singboxer::App::parse_subscription_content(&content, &singboxer::models::Subscription {
+                name: name.clone(),
+                url: format!("file://{}", file),
+                sub_type: singboxer::models::SubscriptionType::Auto,
+                enabled: true,
+            })?;
+
+            println!("Imported {} proxies from file:", proxies.len());
+            for proxy in &proxies {
+                println!("  - {} | {} | {}", proxy.name, format_proxy_type(&proxy.proxy_type), proxy.server);
+            }
+
+            // Save as a subscription (stored as file:// URL for reloading)
+            let mut app = singboxer::App::new()?;
+            app.add_subscription(name, format!("file://{}", file));
             println!("Subscription added successfully.");
         }
         Some(Commands::Remove { name }) => {

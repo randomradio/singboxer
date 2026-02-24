@@ -6,6 +6,12 @@ use base64::Engine;
 
 /// Fetch and parse a subscription URL
 pub async fn fetch_subscription(url: &str) -> Result<String> {
+    // Check if it's a file:// URL
+    if let Some(path) = url.strip_prefix("file://") {
+        return std::fs::read_to_string(path)
+            .context("Failed to read subscription file");
+    }
+
     let client = reqwest::Client::builder()
         .user_agent("clash")
         .build()?;
@@ -22,6 +28,19 @@ pub async fn fetch_subscription(url: &str) -> Result<String> {
         .context("Failed to read subscription content")?;
 
     Ok(content)
+}
+
+/// Fetch subscription synchronously (for use in non-async context)
+pub fn fetch_subscription_sync(url: &str) -> Result<String> {
+    // Check if it's a file:// URL
+    if let Some(path) = url.strip_prefix("file://") {
+        return std::fs::read_to_string(path)
+            .context("Failed to read subscription file");
+    }
+
+    let rt = tokio::runtime::Runtime::new()
+        .context("Failed to create runtime")?;
+    rt.block_on(fetch_subscription(url))
 }
 
 /// Detect if content is base64 encoded

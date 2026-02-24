@@ -302,6 +302,10 @@ impl App {
     }
 
     pub fn detect_subscription_type(url: &str) -> crate::models::SubscriptionType {
+        // Check for file:// URLs first
+        if url.starts_with("file://") {
+            return crate::models::SubscriptionType::Auto;
+        }
         if url.contains("/clash") || url.contains("clash") {
             crate::models::SubscriptionType::Clash
         } else if url.contains("/shadowsocks") || url.contains("/ss") {
