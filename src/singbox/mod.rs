@@ -155,7 +155,13 @@ impl SingBoxManager {
     }
 
     /// Start sing-box with the given configuration
-    pub fn start(&self, config_path: &Path) -> Result<u32> {
+    pub fn start(&self, config_path: &str) -> Result<u32> {
+        // Ensure config directory exists
+        if let Some(parent) = PathBuf::from(config_path).parent() {
+            std::fs::create_dir_all(parent)
+                .context("Failed to create config directory")?;
+        }
+
         // Check if already running
         let mut process_guard = self.process.lock().unwrap();
         if let Some(ref mut proc) = *process_guard {
@@ -165,17 +171,18 @@ impl SingBoxManager {
         }
 
         let binary = self.binary_path.lock().unwrap();
-        let _path = binary.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("sing-box not found"))?;
+        let path = binary.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("sing-box binary not found. Install from {}", SINGBOX_GITHUB))?;
 
         // First validate the config
         drop(binary);
-        self.validate_config(config_path)?;
+        self.validate_config(Path::new(config_path))?;
 
         // Start sing-box
         let binary = self.binary_path.lock().unwrap();
         let path = binary.as_ref().unwrap();
 
+        // Note: TUN mode requires CAP_NET_ADMIN capability
         let child = Command::new(path)
             .arg("run")
             .arg("-c")
@@ -183,7 +190,7 @@ impl SingBoxManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("Failed to start sing-box")?;
+            .context("Failed to start sing-box.\nHint: TUN mode requires CAP_NET_ADMIN. Run: sudo setcap cap_net_admin,cap_net_raw+ep /path/to/sing-box\nOr run with: sudo ./sing-box run -c config.json")?;
 
         let pid = child.id();
         *process_guard = Some(SingBoxProcess { child, pid });
@@ -205,7 +212,7 @@ impl SingBoxManager {
     pub fn restart(&self, config_path: &Path) -> Result<u32> {
         self.stop()?;
         std::thread::sleep(Duration::from_millis(500));
-        self.start(config_path)
+        self.start(config_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid config path"))?)
     }
 
     /// Get current status

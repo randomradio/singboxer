@@ -52,6 +52,16 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Start sing-box with selected proxy
+    Start {
+        /// Start in foreground (shows logs)
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// Stop sing-box
+    Stop {},
+    /// Check sing-box status
+    Status {},
 }
 
 fn main() -> Result<()> {
@@ -166,6 +176,105 @@ fn main() -> Result<()> {
                     }
                 }
             })?;
+        }
+        Some(Commands::Start { foreground }) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            let mut app = singboxer::App::new()?;
+
+            // Auto-load proxies from first enabled subscription if none loaded
+            if app.proxies.is_empty() {
+                if let Some(first_sub) = app.subscriptions.iter().find(|s| s.enabled).cloned() {
+                    println!("Loading proxies from: {}", first_sub.name);
+                    match rt.block_on(singboxer::fetch_subscription(&first_sub.url)) {
+                        Ok(content) => {
+                            match singboxer::App::parse_subscription_content(&content, &first_sub) {
+                                Ok(proxies) => {
+                                    app.proxies = proxies;
+                                    println!("Loaded {} proxies.", app.proxies.len());
+                                }
+                                Err(e) => {
+                                    eprintln!("Error parsing subscription: {}", e);
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error fetching subscription: {}", e);
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    eprintln!("Error: No subscriptions found. Add one first:");
+                    eprintln!("  ./singboxer add \"Name\" \"https://subscription-url\"");
+                    eprintln!("  ./singboxer import \"Name\" \"/path/to/file.yaml\"");
+                    return Ok(());
+                }
+            }
+
+            if app.proxies.is_empty() {
+                eprintln!("Error: No proxies found in subscriptions.");
+                return Ok(());
+            }
+
+            // Generate config and start sing-box
+            let config = singboxer::generate_singbox_config(&app.proxies, None)?;
+            let config_path = app.config.singbox_config_dir.join("config.json");
+
+            // Save config
+            std::fs::create_dir_all(&app.config.singbox_config_dir)?;
+            std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+            // Start sing-box
+            match app.singbox.start(config_path.to_str().unwrap()) {
+                Ok(pid) => {
+                    println!("sing-box started successfully (PID: {})", pid);
+                    println!("Config: {}", config_path.display());
+                    println!("\nTo stop it later, run: ./singboxer stop");
+
+                    if foreground {
+                        println!("\nRunning in foreground mode not yet implemented.");
+                        println!("sing-box is running in background.");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error starting sing-box: {}", e);
+                    eprintln!("\nTroubleshooting:");
+                    eprintln!("1. Make sure sing-box is installed: which sing-box");
+                    eprintln!("2. For TUN mode, you may need CAP_NET_ADMIN:");
+                    eprintln!("   sudo setcap cap_net_admin,cap_net_raw+ep $(which sing-box)");
+                    eprintln!("3. Or run with sudo: sudo ./sing-box start");
+                }
+            }
+        }
+        Some(Commands::Stop {}) => {
+            let app = singboxer::App::new()?;
+            match app.singbox.stop() {
+                Ok(_) => println!("sing-box stopped."),
+                Err(e) => {
+                    eprintln!("Error stopping sing-box: {}", e);
+                    eprintln!("It may not be running.");
+                }
+            }
+        }
+        Some(Commands::Status {}) => {
+            let app = singboxer::App::new()?;
+            let status = app.singbox.status();
+
+            match status {
+                singboxer::singbox::SingBoxStatus::NotFound => {
+                    println!("sing-box: Not Installed");
+                    println!("Install from: https://github.com/SagerNet/sing-box#installation");
+                }
+                singboxer::singbox::SingBoxStatus::Available => {
+                    println!("sing-box: Installed (Stopped)");
+                }
+                singboxer::singbox::SingBoxStatus::Running { pid } => {
+                    println!("sing-box: Running (PID: {})", pid);
+                }
+                singboxer::singbox::SingBoxStatus::Stopped => {
+                    println!("sing-box: Stopped");
+                }
+            }
         }
         None => {
             // Default to UI

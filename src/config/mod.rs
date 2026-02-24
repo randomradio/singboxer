@@ -74,17 +74,18 @@ pub fn generate_singbox_config(
 ) -> Result<SingBoxConfig> {
     let mut config = SingBoxConfig::default();
 
-    // Add TUN inbound
+    // Add TUN inbound (using modern 'address' field instead of deprecated inet4_address/inet6_address)
     config.inbounds = vec![
         serde_json::json!({
             "type": "tun",
             "tag": "tun-in",
-            "inet4_address": "172.19.0.1/30",
-            "inet6_address": "fdfe:dcba:9876::1/126",
+            "address": [
+                "172.19.0.1/30",
+                "fdfe:dcba:9876::1/126"
+            ],
             "auto_route": true,
             "strict_route": false,
-            "sniff": true,
-            "sniff_override_destination": true
+            "mtu": 9000
         })
     ];
 
@@ -94,8 +95,7 @@ pub fn generate_singbox_config(
             "type": "socks",
             "tag": "socks-in",
             "listen": "127.0.0.1",
-            "listen_port": 7890,
-            "sniff": true
+            "listen_port": 7890
         })
     );
 
@@ -105,8 +105,7 @@ pub fn generate_singbox_config(
             "type": "http",
             "tag": "http-in",
             "listen": "127.0.0.1",
-            "listen_port": 7891,
-            "sniff": true
+            "listen_port": 7891
         })
     );
 
@@ -118,13 +117,31 @@ pub fn generate_singbox_config(
 
     let mut outbounds = Vec::new();
 
-    // Add selector for manual selection
+    // Add direct and block first
     outbounds.push(serde_json::json!({
-        "type": "selector",
-        "tag": "proxy",
-        "outbounds": proxy_tags,
-        "default": proxy_tags.first().cloned().unwrap_or_else(|| "direct".to_string())
+        "type": "direct",
+        "tag": "direct"
     }));
+
+    outbounds.push(serde_json::json!({
+        "type": "block",
+        "tag": "block"
+    }));
+
+    outbounds.push(serde_json::json!({
+        "type": "dns",
+        "tag": "dns-out"
+    }));
+
+    // Add selector for manual selection
+    if !proxy_tags.is_empty() {
+        outbounds.push(serde_json::json!({
+            "type": "selector",
+            "tag": "proxy",
+            "outbounds": proxy_tags,
+            "default": selected_proxy.map(|s| sanitize_tag(s)).unwrap_or_else(|| proxy_tags[0].clone())
+        }));
+    }
 
     // Add urltest for auto selection
     if !proxy_tags.is_empty() {
@@ -143,64 +160,55 @@ pub fn generate_singbox_config(
         outbounds.push(crate::parser::proxy_to_outbound(proxy));
     }
 
-    // Add default outbounds
-    outbounds.push(serde_json::json!({
-        "type": "direct",
-        "tag": "direct"
-    }));
-
-    outbounds.push(serde_json::json!({
-        "type": "block",
-        "tag": "block"
-    }));
-
-    outbounds.push(serde_json::json!({
-        "type": "dns",
-        "tag": "dns-out"
-    }));
-
     config.outbounds = outbounds;
 
-    // Set selected proxy if provided
-    if let Some(selected) = selected_proxy {
-        let tag = sanitize_tag(selected);
-        if proxy_tags.contains(&tag) {
-            // Update selector default
-            if let Some(selector) = config.outbounds.get_mut(0) {
-                if let Some(default) = selector.get_mut("default") {
-                    *default = serde_json::json!(tag);
-                }
+    // Add DNS configuration
+    config.dns = Some(serde_json::json!({
+        "servers": [
+            {
+                "tag": "local",
+                "address": "https://223.5.5.5/dns-query",
+                "strategy": "prefer_ipv4"
+            },
+            {
+                "tag": "remote",
+                "address": "https://1.1.1.1/dns-query",
+                "strategy": "prefer_ipv4",
+                "address_resolver": "local"
             }
-        }
-    }
+        ],
+        "final": "local",
+        "strategy": "prefer_ipv4",
+        "disable_cache": false
+    }));
 
-    // Add routing rules
-    config.route = Some(RouteConfig {
-        rules: vec![
+    // Add routing rules with sniff configuration
+    config.route = Some(serde_json::json!({
+        "rules": [
             // DNS queries
-            serde_json::json!({
+            {
                 "protocol": "dns",
                 "outbound": "dns-out"
-            }),
-            // Private networks
-            serde_json::json!({
+            },
+            // Private networks - direct
+            {
                 "geoip": "private",
                 "outbound": "direct"
-            }),
-            // China IPs (direct)
-            serde_json::json!({
+            },
+            // China IPs - direct
+            {
                 "geoip": "cn",
                 "outbound": "direct"
-            }),
-            // China domains (direct)
-            serde_json::json!({
+            },
+            // China domains - direct
+            {
                 "geosite": "cn",
                 "outbound": "direct"
-            }),
+            }
         ],
-        final_outbound: Some("proxy".to_string()),
-        auto_detect_interface: Some(true),
-    });
+        "final": "proxy",
+        "auto_detect_interface": true
+    }));
 
     Ok(config)
 }

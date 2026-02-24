@@ -178,10 +178,10 @@ pub struct SingBoxOutbound {
 pub struct SingBoxConfig {
     pub log: Option<LogConfig>,
     pub experimental: Option<ExperimentalConfig>,
-    pub dns: Option<DnsConfig>,
+    pub dns: Option<serde_json::Value>,
     pub inbounds: Vec<serde_json::Value>,
     pub outbounds: Vec<serde_json::Value>,
-    pub route: Option<RouteConfig>,
+    pub route: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,23 +252,10 @@ impl Default for SingBoxConfig {
                     secret: None,
                 }),
             }),
-            dns: Some(DnsConfig {
-                servers: vec![
-                    DnsServer {
-                        tag: "local".to_string(),
-                        address: "https://223.5.5.5/dns-query".to_string(),
-                        address_resolver: None,
-                        strategy: Some("prefer_ipv4".to_string()),
-                    },
-                ],
-            }),
+            dns: None,
             inbounds: vec![],
             outbounds: vec![],
-            route: Some(RouteConfig {
-                rules: vec![],
-                final_outbound: Some("proxy".to_string()),
-                auto_detect_interface: Some(true),
-            }),
+            route: None,
         }
     }
 }

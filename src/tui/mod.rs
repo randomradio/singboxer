@@ -105,21 +105,31 @@ impl App {
             return Err(anyhow::anyhow!("sing-box not found. Install from {}", SINGBOX_GITHUB));
         }
 
+        if self.proxies.is_empty() {
+            return Err(anyhow::anyhow!("No proxies loaded. Load a subscription first (press Enter on subscription)"));
+        }
+
         // Generate config first
         let config_path = self.config.singbox_config_dir.join("config.json");
         let selected = self.proxies.get(self.selected_proxy).map(|p| p.name.as_str());
         let config = crate::config::generate_singbox_config(&self.proxies, selected)?;
         crate::config::save_singbox_config(&config, &config_path)?;
 
-        match self.singbox.start(&config_path) {
+        // Show config path for debugging
+        let config_path_str = config_path.display().to_string();
+        tracing::info!("Generated config at: {}", config_path_str);
+
+        match self.singbox.start(&config_path_str) {
             Ok(pid) => {
-                self.status = format!("sing-box started (PID: {})", pid);
+                self.status = format!("Started sing-box (PID: {}) | Config: {}", pid, config_path_str);
                 self.update_singbox_status();
                 Ok(())
             }
             Err(e) => {
-                self.status = format!("Failed to start sing-box: {}", e);
-                Err(e)
+                let error_msg = format!("Failed: {} | Config: {}", e, config_path_str);
+                tracing::error!("{}", error_msg);
+                self.status = error_msg.clone();
+                Err(e.context(format!("Check TUN mode permissions - try running: sudo ./sing-box run -c {}", config_path_str)))
             }
         }
     }
