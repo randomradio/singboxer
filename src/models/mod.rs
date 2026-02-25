@@ -9,7 +9,12 @@ pub struct Subscription {
     pub url: String,
     #[serde(rename = "type")]
     pub sub_type: SubscriptionType,
+    #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 impl Subscription {
