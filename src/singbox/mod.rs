@@ -259,12 +259,48 @@ impl SingBoxManager {
 
     /// Stop the running sing-box process
     pub fn stop(&self) -> Result<()> {
+        // First, try to kill the tracked process
         let mut process_guard = self.process.lock().unwrap();
         if let Some(ref mut proc) = *process_guard {
             proc.kill()?;
             *process_guard = None;
         }
+        drop(process_guard);
+
+        // Also check for and kill any externally running sing-box process
+        // This handles cases where sing-box was started outside this manager instance
+        if let Ok(pid) = self.find_running_instance() {
+            self.kill_by_pid(pid)?;
+        }
+
         Ok(())
+    }
+
+    /// Kill a process by PID
+    fn kill_by_pid(&self, pid: u32) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let status = Command::new("kill")
+                .arg(pid.to_string())
+                .status();
+            match status {
+                Ok(s) if s.success() => Ok(()),
+                Ok(_) => Err(anyhow::anyhow!("kill command failed for PID {}", pid)),
+                Err(e) => Err(anyhow::anyhow!("Failed to execute kill: {}", e)),
+            }
+        }
+        #[cfg(windows)]
+        {
+            let status = Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .status();
+            match status {
+                Ok(s) if s.success() => Ok(()),
+                Ok(_) => Err(anyhow::anyhow!("taskkill command failed for PID {}", pid)),
+                Err(e) => Err(anyhow::anyhow!("Failed to execute taskkill: {}", e)),
+            }
+        }
     }
 
     /// Restart sing-box with new configuration
