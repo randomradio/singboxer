@@ -14,6 +14,8 @@ pub async fn fetch_subscription(url: &str) -> Result<String> {
 
     let client = reqwest::Client::builder()
         .user_agent("clash")
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
         .build()?;
 
     let response = client
@@ -22,10 +24,15 @@ pub async fn fetch_subscription(url: &str) -> Result<String> {
         .await
         .context("Failed to fetch subscription")?;
 
+    let status = response.status();
     let content = response
         .text()
         .await
         .context("Failed to read subscription content")?;
+
+    if !status.is_success() {
+        return Err(anyhow::anyhow!("HTTP error {}: {}", status, content));
+    }
 
     Ok(content)
 }

@@ -222,6 +222,21 @@ pub fn generate_singbox_config(
                 "ip_is_private": true,
                 "action": "direct"
             },
+            // Bypass common subscription/update domains to prevent routing loops
+            // These need direct access so subscription fetching works when TUN is active
+            {
+                "domain_suffix": [
+                    "feed-dl.com",
+                    "subconverter.net",
+                    "sublink.org",
+                    "github.com",
+                    "raw.githubusercontent.com",
+                    "api.github.com",
+                    "gist.githubusercontent.com",
+                    "cdn.jsdelivr.net"
+                ],
+                "action": "direct"
+            },
             // DNS queries - use route action
             {
                 "protocol": "dns",

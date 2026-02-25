@@ -478,6 +478,16 @@ async fn command_current() -> Result<()> {
 }
 
 async fn command_start(no_tun: bool) -> Result<()> {
+    // Show TUN mode warning/info before proceeding
+    if !no_tun {
+        #[cfg(target_os = "linux")]
+        eprintln!("Note: TUN mode on Linux requires sing-box to have CAP_NET_ADMIN capability:");
+        #[cfg(target_os = "linux")]
+        eprintln!("  sudo setcap cap_net_admin,cap_net_raw+ep $(which sing-box)");
+        #[cfg(target_os = "linux")]
+        eprintln!();
+    }
+
     let config = get_config()?;
     let subs = config.load_subscriptions()?;
 
@@ -490,11 +500,19 @@ async fn command_start(no_tun: bool) -> Result<()> {
     // Load proxies from first enabled subscription
     let mut all_proxies: Vec<singboxer::ProxyServer> = Vec::new();
     for sub in subs.iter().filter(|s| s.enabled) {
+        eprintln!("Fetching subscription from: {}", sub.url);
         match singboxer::fetch_subscription(&sub.url).await {
             Ok(content) => {
-                if let Ok(proxies) = singboxer::App::parse_subscription_content(&content, sub) {
-                    println!("Loaded {} proxies from {}", proxies.len(), sub.name);
-                    all_proxies.extend(proxies);
+                eprintln!("Fetched {} bytes from {}", content.len(), sub.name);
+                match singboxer::App::parse_subscription_content(&content, sub) {
+                    Ok(proxies) => {
+                        println!("Loaded {} proxies from {}", proxies.len(), sub.name);
+                        all_proxies.extend(proxies);
+                    }
+                    Err(e) => {
+                        eprintln!("Error parsing {}: {}", sub.name, e);
+                        eprintln!("Content preview: {}", &content[..content.len().min(200)]);
+                    }
                 }
             }
             Err(e) => {
