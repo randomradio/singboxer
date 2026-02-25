@@ -170,14 +170,12 @@ pub fn generate_singbox_config(
             {
                 "tag": "local-dns",
                 "type": "udp",
-                "server": "223.5.5.5",
-                "detour": "direct"
+                "server": "223.5.5.5"
             },
             {
                 "tag": "remote-dns",
                 "type": "https",
-                "server": "1.1.1.1",
-                "detour": "proxy"
+                "server": "1.1.1.1"
             }
         ],
         "final": "local-dns",
