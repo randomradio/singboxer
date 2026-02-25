@@ -15,12 +15,14 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("singboxer");
+        // Use ~/.config/singboxer for subscriptions
+        // Use ~/.config/sing-box for sing-box configs
+        let base_config = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from(".config"));
 
+        let config_dir = base_config.join("singboxer");
         let subscriptions_file = config_dir.join("subscriptions.json");
-        let singbox_config_dir = config_dir.join("singbox");
+        let singbox_config_dir = base_config.join("sing-box");
 
         Self {
             config_dir,
