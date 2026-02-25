@@ -68,26 +68,35 @@ impl AppConfig {
 }
 
 /// Generate sing-box configuration from proxy servers
+///
+/// # Arguments
+/// * `proxies` - List of proxy servers
+/// * `selected_proxy` - Name of the currently selected proxy
+/// * `no_tun` - If true, exclude TUN inbound (useful for systems without TUN permissions)
 pub fn generate_singbox_config(
     proxies: &[ProxyServer],
     selected_proxy: Option<&str>,
+    no_tun: bool,
 ) -> Result<SingBoxConfig> {
     let mut config = SingBoxConfig::default();
 
-    // Add TUN inbound (using modern 'address' field instead of deprecated inet4_address/inet6_address)
-    config.inbounds = vec![
-        serde_json::json!({
-            "type": "tun",
-            "tag": "tun-in",
-            "address": [
-                "172.19.0.1/30",
-                "fdfe:dcba:9876::1/126"
-            ],
-            "auto_route": true,
-            "strict_route": false,
-            "mtu": 9000
-        })
-    ];
+    // Add TUN inbound (using modern 'address' field)
+    // Skip if no_tun is true (for systems where TUN requires root)
+    if !no_tun {
+        config.inbounds.push(
+            serde_json::json!({
+                "type": "tun",
+                "tag": "tun-in",
+                "address": [
+                    "172.19.0.1/30",
+                    "fdfe:dcba:9876::1/126"
+                ],
+                "auto_route": true,
+                "strict_route": false,
+                "mtu": 9000
+            })
+        );
+    }
 
     // Add SOCKS inbound for local use
     config.inbounds.push(

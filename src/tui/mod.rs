@@ -112,7 +112,7 @@ impl App {
         // Generate config first
         let config_path = self.config.singbox_config_dir.join("config.json");
         let selected = self.proxies.get(self.selected_proxy).map(|p| p.name.as_str());
-        let config = crate::config::generate_singbox_config(&self.proxies, selected)?;
+        let config = crate::config::generate_singbox_config(&self.proxies, selected, false)?;
         crate::config::save_singbox_config(&config, &config_path)?;
 
         // Show config path for debugging
@@ -376,7 +376,7 @@ impl App {
         }
 
         let selected = self.proxies.get(self.selected_proxy).map(|p| p.name.as_str());
-        let config = crate::config::generate_singbox_config(&self.proxies, selected)?;
+        let config = crate::config::generate_singbox_config(&self.proxies, selected, false)?;
         let config_path = self.config.singbox_config_dir.join("config.json");
         crate::config::save_singbox_config(&config, &config_path)?;
         Ok(format!("Config saved to: {}", config_path.display()))

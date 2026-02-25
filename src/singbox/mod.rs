@@ -178,24 +178,59 @@ impl SingBoxManager {
         drop(binary);
         self.validate_config(Path::new(config_path))?;
 
-        // Start sing-box
+        // Start sing-box - capture stderr to read error messages
         let binary = self.binary_path.lock().unwrap();
         let path = binary.as_ref().unwrap();
 
-        // Note: TUN mode requires CAP_NET_ADMIN capability
-        let child = Command::new(path)
+        let mut child = Command::new(path)
             .arg("run")
             .arg("-c")
             .arg(config_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("Failed to start sing-box.\nHint: TUN mode requires CAP_NET_ADMIN. Run: sudo setcap cap_net_admin,cap_net_raw+ep /path/to/sing-box\nOr run with: sudo ./sing-box run -c config.json")?;
+            .map_err(|e| {
+                let mut hint = "Failed to start sing-box.\n".to_string();
+
+                // Detect common issues and provide hints
+                if e.to_string().contains("permission") || e.to_string().contains("permitted") {
+                    hint.push_str("\nTUN mode requires special permissions:\n");
+                    hint.push_str("  macOS: Run with sudo (TUN requires root)\n");
+                    hint.push_str("  Linux: sudo setcap cap_net_admin,cap_net_raw+ep $(which sing-box)\n");
+                } else {
+                    hint.push_str(&format!("Error: {}", e));
+                }
+
+                anyhow::anyhow!("{}", hint)
+            })?;
 
         let pid = child.id();
-        *process_guard = Some(SingBoxProcess { child, pid });
 
-        Ok(pid)
+        // Wait a moment to see if sing-box starts successfully or fails immediately
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Check if process is still alive
+        match child.try_wait() {
+            Ok(Some(exit_status)) => {
+                // Process exited - read stderr for error message
+                if let Some(mut stderr) = child.stderr {
+                    let mut error_msg = String::new();
+                    use std::io::Read;
+                    if stderr.read_to_string(&mut error_msg).is_ok() && !error_msg.is_empty() {
+                        return Err(anyhow::anyhow!("sing-box exited with code {:?}: {}", exit_status.code(), error_msg));
+                    }
+                }
+                return Err(anyhow::anyhow!("sing-box exited immediately with code {:?}", exit_status.code()));
+            }
+            Ok(None) => {
+                // Still running - good!
+                *process_guard = Some(SingBoxProcess { child, pid });
+                Ok(pid)
+            }
+            Err(e) => {
+                Err(anyhow::anyhow!("Failed to check sing-box process: {}", e))
+            }
+        }
     }
 
     /// Stop the running sing-box process

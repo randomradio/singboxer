@@ -54,9 +54,9 @@ enum Commands {
     },
     /// Start sing-box with selected proxy
     Start {
-        /// Start in foreground (shows logs)
+        /// Disable TUN mode (useful for systems without TUN permissions)
         #[arg(long)]
-        foreground: bool,
+        no_tun: bool,
     },
     /// Stop sing-box
     Stop {},
@@ -162,7 +162,7 @@ fn main() -> Result<()> {
                             enabled: true,
                         })?;
 
-                        let config = singboxer::generate_singbox_config(&proxies, None)?;
+                        let config = singboxer::generate_singbox_config(&proxies, None, false)?;
 
                         let output_path = output.unwrap_or_else(|| "config.json".to_string());
                         std::fs::write(&output_path, serde_json::to_string_pretty(&config)?)?;
@@ -177,7 +177,7 @@ fn main() -> Result<()> {
                 }
             })?;
         }
-        Some(Commands::Start { foreground }) => {
+        Some(Commands::Start { no_tun }) => {
             let rt = tokio::runtime::Runtime::new()?;
             let mut app = singboxer::App::new()?;
 
@@ -217,7 +217,7 @@ fn main() -> Result<()> {
             }
 
             // Generate config and start sing-box
-            let config = singboxer::generate_singbox_config(&app.proxies, None)?;
+            let config = singboxer::generate_singbox_config(&app.proxies, None, no_tun)?;
             let config_path = app.config.singbox_config_dir.join("config.json");
 
             // Save config
@@ -231,18 +231,21 @@ fn main() -> Result<()> {
                     println!("Config: {}", config_path.display());
                     println!("\nTo stop it later, run: ./singboxer stop");
 
-                    if foreground {
-                        println!("\nRunning in foreground mode not yet implemented.");
-                        println!("sing-box is running in background.");
+                    if no_tun {
+                        println!("Note: Running without TUN mode. Only SOCKS/HTTP proxies available.");
+                        println!("SOCKS5: 127.0.0.1:7890 | HTTP: 127.0.0.1:7891");
                     }
                 }
                 Err(e) => {
                     eprintln!("Error starting sing-box: {}", e);
                     eprintln!("\nTroubleshooting:");
                     eprintln!("1. Make sure sing-box is installed: which sing-box");
-                    eprintln!("2. For TUN mode, you may need CAP_NET_ADMIN:");
-                    eprintln!("   sudo setcap cap_net_admin,cap_net_raw+ep $(which sing-box)");
-                    eprintln!("3. Or run with sudo: sudo ./sing-box start");
+                    if !no_tun {
+                        eprintln!("2. TUN mode requires permissions. Try:");
+                        eprintln!("   - macOS: Run with sudo");
+                        eprintln!("   - Linux: sudo setcap cap_net_admin,cap_net_raw+ep $(which sing-box)");
+                        eprintln!("   - Or use --no-tun flag (SOCKS proxy only): ./singboxer start --no-tun");
+                    }
                 }
             }
         }
