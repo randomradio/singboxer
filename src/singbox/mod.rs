@@ -114,6 +114,15 @@ impl SingBoxManager {
 
     /// Get sing-box version
     pub fn get_version(&self) -> Result<String> {
+        // Ensure binary path is cached
+        {
+            let binary = self.binary_path.lock().unwrap();
+            if binary.is_none() {
+                drop(binary);
+                self.check_installation()?;
+            }
+        }
+
         let binary = self.binary_path.lock().unwrap();
         let path = binary.as_ref()
             .ok_or_else(|| anyhow::anyhow!("sing-box not found"))?;
@@ -135,6 +144,15 @@ impl SingBoxManager {
 
     /// Validate a sing-box configuration
     pub fn validate_config(&self, config_path: &Path) -> Result<()> {
+        // Ensure binary path is cached
+        {
+            let binary = self.binary_path.lock().unwrap();
+            if binary.is_none() {
+                drop(binary);
+                self.check_installation()?;
+            }
+        }
+
         let binary = self.binary_path.lock().unwrap();
         let path = binary.as_ref()
             .ok_or_else(|| anyhow::anyhow!("sing-box not found"))?;
@@ -156,6 +174,15 @@ impl SingBoxManager {
 
     /// Start sing-box with the given configuration
     pub fn start(&self, config_path: &str) -> Result<u32> {
+        // Ensure binary path is cached
+        {
+            let binary = self.binary_path.lock().unwrap();
+            if binary.is_none() {
+                drop(binary);
+                self.check_installation()?;
+            }
+        }
+
         // Ensure config directory exists
         if let Some(parent) = PathBuf::from(config_path).parent() {
             std::fs::create_dir_all(parent)
