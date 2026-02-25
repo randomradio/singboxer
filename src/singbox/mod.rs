@@ -178,7 +178,7 @@ impl SingBoxManager {
         drop(binary);
         self.validate_config(Path::new(config_path))?;
 
-        // Start sing-box - capture stderr to read error messages
+        // Start sing-box - use inherit for stdout/stderr so it stays alive after parent exits
         let binary = self.binary_path.lock().unwrap();
         let path = binary.as_ref().unwrap();
 
@@ -186,8 +186,8 @@ impl SingBoxManager {
             .arg("run")
             .arg("-c")
             .arg(config_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::inherit())  // Inherit stdout so TUN logs go to terminal
+            .stderr(Stdio::inherit())  // Inherit stderr for error messages
             .spawn()
             .map_err(|e| {
                 let mut hint = "Failed to start sing-box.\n".to_string();
@@ -206,31 +206,28 @@ impl SingBoxManager {
 
         let pid = child.id();
 
-        // Wait a moment to see if sing-box starts successfully or fails immediately
-        std::thread::sleep(Duration::from_millis(500));
+        // Wait longer for TUN to initialize (up to 2 seconds)
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(500));
 
-        // Check if process is still alive
-        match child.try_wait() {
-            Ok(Some(exit_status)) => {
-                // Process exited - read stderr for error message
-                if let Some(mut stderr) = child.stderr {
-                    let mut error_msg = String::new();
-                    use std::io::Read;
-                    if stderr.read_to_string(&mut error_msg).is_ok() && !error_msg.is_empty() {
-                        return Err(anyhow::anyhow!("sing-box exited with code {:?}: {}", exit_status.code(), error_msg));
-                    }
+            match child.try_wait() {
+                Ok(Some(exit_status)) => {
+                    return Err(anyhow::anyhow!("sing-box exited with code {:?}\nCheck the logs above for errors", exit_status.code()));
                 }
-                return Err(anyhow::anyhow!("sing-box exited immediately with code {:?}", exit_status.code()));
-            }
-            Ok(None) => {
-                // Still running - good!
-                *process_guard = Some(SingBoxProcess { child, pid });
-                Ok(pid)
-            }
-            Err(e) => {
-                Err(anyhow::anyhow!("Failed to check sing-box process: {}", e))
+                Ok(None) => {
+                    // Still running - keep waiting
+                    continue;
+                }
+                Err(e) => {
+                    // Can't check status - assume it's running
+                    break;
+                }
             }
         }
+
+        // If we get here, process should be running
+        *process_guard = Some(SingBoxProcess { child, pid });
+        Ok(pid)
     }
 
     /// Stop the running sing-box process
@@ -303,30 +300,44 @@ impl SingBoxManager {
 
         config
             .get("experimental")?
-            .get("clash-api")?
+            .get("clash_api")?
             .get("external-controller")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     }
 
-    /// Switch proxy via Clash API
-    pub async fn switch_proxy(&self, selector: &str, proxy_tag: &str, config_path: &Path) -> Result<()> {
-        let api_url = self.get_clash_api_url(config_path)
-            .unwrap_or_else(|| "http://127.0.0.1:9090".to_string());
+    /// Get the currently selected proxy from Clash API
+    pub async fn get_selected_proxy(&self) -> Result<String> {
+        let client = reqwest::Client::new();
+        let url = "http://127.0.0.1:9090/proxies/proxy";
 
-        let url = format!("{}/proxies/{}", api_url, selector);
-        let secret = self.get_clash_api_secret(config_path);
+        let response = client.get(url)
+            .send()
+            .await
+            .context("Failed to connect to Clash API - is sing-box running?")?;
 
-        let mut request = reqwest::Client::new()
-            .put(&url)
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "name": proxy_tag }));
-
-        if let Some(token) = secret {
-            request = request.header("Authorization", format!("Bearer {}", token));
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Clash API returned error: {}", response.status()));
         }
 
-        let response = request.send().await
+        let json: serde_json::Value = response.json().await?;
+        json.get("now")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("No selected proxy found in response"))
+    }
+
+    /// Switch proxy via tag (uses default selector "proxy")
+    pub async fn switch_proxy(&self, proxy_tag: &str) -> Result<()> {
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:9090/proxies/proxy");
+
+        let response = client
+            .put(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "name": proxy_tag }))
+            .send()
+            .await
             .context("Failed to connect to Clash API")?;
 
         if !response.status().is_success() {
@@ -342,7 +353,7 @@ impl SingBoxManager {
 
         config
             .get("experimental")?
-            .get("clash-api")?
+            .get("clash_api")?
             .get("secret")
             .and_then(|v| v.as_str())
             .map(|s| {

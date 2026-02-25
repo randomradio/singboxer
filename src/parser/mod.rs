@@ -43,6 +43,141 @@ pub fn fetch_subscription_sync(url: &str) -> Result<String> {
     rt.block_on(fetch_subscription(url))
 }
 
+/// Parse subscription content (auto-detect format)
+pub fn parse_subscription_content(content: &str, subscription: &Subscription) -> Result<Vec<ProxyServer>> {
+    // Try different parsing strategies based on subscription type or content
+
+    // 1. Try Clash YAML first (most common)
+    if content.trim_start().starts_with("proxies:") || content.contains("proxies:") {
+        if let Ok(proxies) = parse_clash_yaml(content) {
+            if !proxies.is_empty() {
+                return Ok(proxies);
+            }
+        }
+    }
+
+    // 2. Try base64 encoded content
+    if is_base64(content) {
+        if let Ok(decoded) = decode_base64(content) {
+            // Check if decoded is YAML
+            if decoded.contains("proxies:") {
+                if let Ok(proxies) = parse_clash_yaml(&decoded) {
+                    if !proxies.is_empty() {
+                        return Ok(proxies);
+                    }
+                }
+            }
+            // Check if it's a list of URIs
+            if let Ok(proxies) = parse_uri_list(&decoded) {
+                if !proxies.is_empty() {
+                    return Ok(proxies);
+                }
+            }
+        }
+    }
+
+    // 3. Try URI list format (one URI per line)
+    if let Ok(proxies) = parse_uri_list(content) {
+        if !proxies.is_empty() {
+            return Ok(proxies);
+        }
+    }
+
+    // 4. Try parsing as Shadowsocks SIP008 JSON
+    if content.trim_start().starts_with("{") {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(content) {
+            if json.get("servers").is_some() || json.get("version").is_some() {
+                if let Ok(proxies) = parse_shadowsocks_json(content) {
+                    if !proxies.is_empty() {
+                        return Ok(proxies);
+                    }
+                }
+            }
+        }
+    }
+
+    // If all else fails, return empty list
+    Ok(Vec::new())
+}
+
+/// Parse a list of URIs (one per line)
+fn parse_uri_list(content: &str) -> Result<Vec<ProxyServer>> {
+    let mut servers = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        if let Ok(server) = parse_v2ray_uri(line) {
+            servers.push(server);
+        }
+    }
+
+    Ok(servers)
+}
+
+/// Parse Shadowsocks SIP008 JSON format
+fn parse_shadowsocks_json(content: &str) -> Result<Vec<ProxyServer>> {
+    let json: serde_json::Value = serde_json::from_str(content)
+        .context("Failed to parse Shadowsocks JSON")?;
+
+    let servers_array = json.get("servers")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("No servers in Shadowsocks config"))?;
+
+    let mut servers = Vec::new();
+
+    for server in servers_array {
+        let name = server.get("remarks")
+            .or_else(|| server.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("SS")
+            .to_string();
+
+        let server_addr = server.get("server")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let port = server.get("server_port")
+            .or_else(|| server.get("port"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(8388) as u16;
+
+        let method = server.get("method")
+            .or_else(|| server.get("cipher"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("aes-256-gcm")
+            .to_string();
+
+        let password = server.get("password")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let country = extract_country_from_name(&name);
+
+        servers.push(ProxyServer {
+            name,
+            proxy_type: ProxyType::Shadowsocks,
+            server: server_addr,
+            port,
+            country,
+            latency_ms: None,
+            config: ProxyConfig::Shadowsocks(ShadowsocksConfig {
+                method,
+                password,
+                plugin: None,
+                plugin_opts: None,
+            }),
+        });
+    }
+
+    Ok(servers)
+}
+
 /// Detect if content is base64 encoded
 pub fn is_base64(content: &str) -> bool {
     content
