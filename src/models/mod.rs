@@ -177,7 +177,7 @@ pub struct SingBoxOutbound {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SingBoxConfig {
     pub log: Option<LogConfig>,
-    pub experimental: Option<ExperimentalConfig>,
+    pub experimental: Option<serde_json::Value>,
     pub dns: Option<serde_json::Value>,
     pub inbounds: Vec<serde_json::Value>,
     pub outbounds: Vec<serde_json::Value>,
@@ -244,12 +244,15 @@ impl Default for SingBoxConfig {
             log: Some(LogConfig {
                 level: "info".to_string(),
             }),
-            experimental: Some(ExperimentalConfig {
-                clash_api: Some(ClashApiConfig {
-                    external_controller: "127.0.0.1:9090".to_string(),
-                    secret: None,
-                }),
-            }),
+            // Use raw JSON to avoid serializing None as null
+            experimental: Some(serde_json::json!({
+                "clash_api": {
+                    "external_controller": "127.0.0.1:9090"
+                },
+                "cache_file": {
+                    "enabled": true
+                }
+            })),
             dns: None,
             inbounds: vec![],
             outbounds: vec![],
