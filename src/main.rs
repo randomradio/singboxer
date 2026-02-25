@@ -42,16 +42,19 @@ enum Commands {
     Proxies {
         /// Filter by subscription name
         subscription: Option<String>,
+        /// Show numbered indices for easier selection
+        #[arg(short, long)]
+        numbered: bool,
     },
     /// Test latency for all proxies
     Test {
         /// Subscription name to test (default: all)
         subscription: Option<String>,
     },
-    /// Select a proxy to use
+    /// Select a proxy to use (by index or partial name)
     Select {
-        /// Proxy name (partial match allowed)
-        name: String,
+        /// Proxy index or name (indices from 'proxies' command, partial name match allowed)
+        identifier: String,
     },
     /// Get current selected proxy
     Current {},
@@ -98,14 +101,14 @@ async fn main() -> Result<()> {
         Some(Commands::List {}) => {
             command_list()?;
         }
-        Some(Commands::Proxies { subscription }) => {
-            command_proxies(subscription).await?;
+        Some(Commands::Proxies { subscription, numbered }) => {
+            command_proxies(subscription, numbered).await?;
         }
         Some(Commands::Test { subscription }) => {
             command_test(subscription).await?;
         }
-        Some(Commands::Select { name }) => {
-            command_select(name).await?;
+        Some(Commands::Select { identifier }) => {
+            command_select(identifier).await?;
         }
         Some(Commands::Current {}) => {
             command_current().await?;
@@ -224,7 +227,7 @@ fn command_list() -> Result<()> {
     Ok(())
 }
 
-async fn command_proxies(subscription: Option<String>) -> Result<()> {
+async fn command_proxies(subscription: Option<String>, numbered: bool) -> Result<()> {
     let config = get_config()?;
     let subs = config.load_subscriptions()?;
 
@@ -244,6 +247,7 @@ async fn command_proxies(subscription: Option<String>) -> Result<()> {
         return Ok(());
     }
 
+    let mut global_index = 1;
     for sub in subs_to_fetch {
         if !sub.enabled {
             continue;
@@ -260,13 +264,22 @@ async fn command_proxies(subscription: Option<String>) -> Result<()> {
                             } else {
                                 String::new()
                             };
-                            println!("  {}. {}{} | {} | {}",
-                                i + 1,
+                            let index = if numbered {
+                                let idx = global_index + i;
+                                format!("{}.", idx)
+                            } else {
+                                format!("{}", i + 1)
+                            };
+                            println!("  {:3} {}{} | {} | {}",
+                                index,
                                 proxy.name,
                                 latency,
                                 format_proxy_type(&proxy.proxy_type),
                                 proxy.server
                             );
+                        }
+                        if !proxies.is_empty() {
+                            global_index += proxies.len();
                         }
                     }
                     Err(e) => {
@@ -278,6 +291,10 @@ async fn command_proxies(subscription: Option<String>) -> Result<()> {
                 eprintln!("Error fetching {}: {}", sub.name, e);
             }
         }
+    }
+
+    if numbered {
+        println!("\nTip: Use 'singboxer select <number>' to select by index");
     }
 
     Ok(())
@@ -355,7 +372,7 @@ async fn command_test(subscription: Option<String>) -> Result<()> {
     Ok(())
 }
 
-async fn command_select(name: String) -> Result<()> {
+async fn command_select(identifier: String) -> Result<()> {
     // Check if sing-box is running
     let manager = singboxer::SingBoxManager::new();
     manager.check_installation()?;
@@ -367,7 +384,7 @@ async fn command_select(name: String) -> Result<()> {
         return Ok(());
     }
 
-    // Get all proxies to find match
+    // Get all proxies
     let config = get_config()?;
     let subs = config.load_subscriptions()?;
     let mut all_proxies: Vec<singboxer::ProxyServer> = Vec::new();
@@ -383,24 +400,41 @@ async fn command_select(name: String) -> Result<()> {
         }
     }
 
-    // Find matching proxy
-    let name_lower = name.to_lowercase();
+    // First, try to parse as numeric index
+    if let Ok(index) = identifier.trim().parse::<usize>() {
+        if index == 0 || index > all_proxies.len() {
+            eprintln!("Error: Index out of range. Valid range: 1-{}", all_proxies.len());
+            return Ok(());
+        }
+
+        let selected = &all_proxies[index - 1];
+        let tag = sanitize_tag(&selected.name);
+
+        println!("Selecting proxy: {}", selected.name);
+
+        manager.switch_proxy(&tag).await?;
+        println!("Selected: {}", selected.name);
+        return Ok(());
+    }
+
+    // Otherwise, do partial name matching
+    let name_lower = identifier.to_lowercase();
     let matches: Vec<_> = all_proxies.iter()
         .filter(|p| p.name.to_lowercase().contains(&name_lower))
         .collect();
 
     if matches.is_empty() {
-        eprintln!("Error: No proxy found matching '{}'", name);
-        eprintln!("Use 'singboxer proxies' to list available proxies.");
+        eprintln!("Error: No proxy found matching '{}'", identifier);
+        eprintln!("Use 'singboxer proxies --numbered' to see indices.");
         return Ok(());
     }
 
     if matches.len() > 1 {
-        eprintln!("Multiple proxies match '{}':", name);
+        eprintln!("Multiple proxies match '{}':", identifier);
         for m in matches {
             eprintln!("  - {}", m.name);
         }
-        eprintln!("Please be more specific.");
+        eprintln!("\nUse 'singboxer proxies --numbered' to see indices and select by number.");
         return Ok(());
     }
 
