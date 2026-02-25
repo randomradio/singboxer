@@ -31,9 +31,9 @@ get_current_proxy() {
     fi
 }
 
-# Sanitize name for tag comparison
+# Sanitize name for tag comparison - use tr for portability
 sanitize_tag() {
-    echo "$1" | sed 's/[^a-zA-Z0-9_-]/-/g' | sed 's/-\+/-/g' | sed 's/^-//;s-$//'
+    echo "$1" | tr -c 'a-zA-Z0-9_-\n' '-' | tr -s '-' | sed 's/^-//;s/-$//'
 }
 
 # Main

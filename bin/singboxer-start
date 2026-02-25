@@ -81,21 +81,16 @@ decode_content() {
     echo "$content"
 }
 
-# Sanitize name for tag
+# Sanitize name for tag - use tr for portability
 sanitize_tag() {
-    echo "$1" | sed 's/[^a-zA-Z0-9_-]/-/g' | sed 's/-\+/-/g' | sed 's/^-//;s-$//'
+    echo "$1" | tr -c 'a-zA-Z0-9_-\n' '-' | tr -s '-' | sed 's/^-//;s/-$//'
 }
 
 # Parse Clash YAML to sing-box proxy JSON
 parse_clash_yaml() {
     local content="$1"
-    local tmp_yaml="/tmp/singboxer-$$.yaml"
 
-    echo "$content" > "$tmp_yaml"
-
-    # Check for jq
     if ! command -v jq &> /dev/null; then
-        rm -f "$tmp_yaml"
         echo "[]"
         return 1
     fi
@@ -104,29 +99,26 @@ parse_clash_yaml() {
 
     # Use yq if available
     if command -v yq &> /dev/null; then
-        local clash_proxies=$(yq '.proxies // []' "$tmp_yaml" 2>/dev/null)
-        rm -f "$tmp_yaml"
+        local clash_proxies=$(echo "$content" | yq '.proxies // []' 2>/dev/null)
         convert_clash_proxies "$clash_proxies"
         return $?
     fi
 
     # Fallback: python
     if command -v python3 &> /dev/null; then
-        local clash_proxies=$(python3 -c "
+        local clash_proxies=$(echo "$content" | python3 -c "
 import sys, yaml, json
 try:
-    data = yaml.safe_load(open('$tmp_yaml'))
+    data = yaml.safe_load(sys.stdin)
     proxies = data.get('proxies', [])
     print(json.dumps(proxies if proxies else []))
 except:
     print('[]')
 " 2>/dev/null)
-        rm -f "$tmp_yaml"
         convert_clash_proxies "$clash_proxies"
         return $?
     fi
 
-    rm -f "$tmp_yaml"
     echo "[]"
     return 1
 }
@@ -140,8 +132,6 @@ convert_clash_proxies() {
         return 1
     fi
 
-    local result="["
-
     echo "$clash_json" | jq -c '.[]' 2>/dev/null | while read -r proxy; do
         local type=$(echo "$proxy" | jq -r '.type // ""')
         local name=$(echo "$proxy" | jq -r '.name // "Unknown"')
@@ -150,13 +140,13 @@ convert_clash_proxies() {
         local tag=$(sanitize_tag "$name")
 
         # Validate server
-        [[ "$server" != *.* ]] && continue
+        [[ "$server" != *.* ]] && [[ "$server" != *:* ]] && continue
 
         case "$type" in
             ss|shadowsocks)
                 local method=$(echo "$proxy" | jq -r '.cipher // "aes-256-gcm"')
                 local password=$(echo "$proxy" | jq -r '.password // ""')
-                echo "{\"type\":\"shadowsocks\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"method\":\"$method\",\"password\":\"$password\"},"
+                echo "{\"type\":\"shadowsocks\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"method\":\"$method\",\"password\":\"$password\"}"
                 ;;
             vmess)
                 local uuid=$(echo "$proxy" | jq -r '.uuid // ""')
@@ -168,7 +158,7 @@ convert_clash_proxies() {
                 if [ -n "$tls" ]; then
                     json+=',\"tls\":{\"enabled\":true}'
                 fi
-                echo "$json},"
+                echo "$json}"
                 ;;
             vless)
                 local uuid=$(echo "$proxy" | jq -r '.uuid // ""')
@@ -180,225 +170,78 @@ convert_clash_proxies() {
                 if [ -n "$tls" ]; then
                     json+=',\"tls\":{\"enabled\":true}'
                 fi
-                echo "$json},"
+                echo "$json}"
                 ;;
             trojan)
                 local password=$(echo "$proxy" | jq -r '.password // ""')
                 [ -z "$password" ] && continue
-                echo "{\"type\":\"trojan\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\",\"tls\":{\"enabled\":true}},"
+                local sni=$(echo "$proxy" | jq -r '.sni // .servername // "'"$server"'"')
+                echo "{\"type\":\"trojan\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\",\"tls\":{\"enabled\":true,\"server_name\":\"$sni\"}}"
                 ;;
             hysteria2|hy2)
                 local password=$(echo "$proxy" | jq -r '.password // ""')
-                echo "{\"type\":\"hysteria2\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\"},"
+                local sni=$(echo "$proxy" | jq -r '.sni // "'"$server"'"')
+                echo "{\"type\":\"hysteria2\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\",\"tls\":{\"enabled\":true,\"server_name\":\"$sni\"}}"
                 ;;
         esac
-    done | sed '$ s/,$//' | tr -d '\n'
-
-    echo "]"
+    done
 }
 
-# Parse vmess:// URI
-parse_vmess() {
-    local uri="$1"
-    local encoded="${uri#vmess://}"
-    local decoded=$(echo "$encoded" | base64 -d 2>/dev/null || echo "")
-    [ -z "$decoded" ] && return ""
-
-    if ! command -v jq &> /dev/null; then
-        return ""
-    fi
-
-    local name=$(echo "$decoded" | jq -r '.ps // .name // "VMess"')
-    local add=$(echo "$decoded" | jq -r '.add // .address // "unknown"')
-    local port=$(echo "$decoded" | jq -r '.port // "0"')
-    local id=$(echo "$decoded" | jq -r '.id // .uuid // ""')
-    local scy=$(echo "$decoded" | jq -r '.scy // .cipher // "auto"')
-    local net=$(echo "$decoded" | jq -r '.net // .network // "tcp"')
-    local tls=$(echo "$decoded" | jq -r '.tls // ""')
-    local sni=$(echo "$decoded" | jq -r '.sni // ""')
-    local path=$(echo "$decoded" | jq -r '.path // ""')
-
-    [[ "$add" != *.* ]] && return ""
-
-    local tag=$(sanitize_tag "$name")
-    local json="{\"type\":\"vmess\",\"tag\":\"$tag\",\"server\":\"$add\",\"server_port\":$port,\"uuid\":\"$id\",\"alter_id\":0,\"security\":\"$scy\",\"network\":\"$net\""
-
-    if [ -n "$tls" ] && [ "$tls" != "none" ]; then
-        json+=',\"tls\":{\"enabled\":true,\"server_name\":\"'$sni'\"}'
-    fi
-    if [ "$net" == "ws" ] && [ -n "$path" ]; then
-        json+=',\"transport\":{\"type\":\"ws\",\"path\":\"'$path'\"}'
-    fi
-
-    echo "$json}"
-}
-
-# Parse vless:// URI
-parse_vless() {
-    local uri="$1"
-    local rest="${uri#vless://}"
-    local uuid="${rest%%@*}"
-    rest="${rest#*@}"
-
-    local server_port="${rest%%\?*}"
-    local server="${server_port%:*}"
-    local port="${server_port##*:}"
-
-    local params="${rest#*\?}"
-    local name="${params##*#}"
-    params="${params%#*}"
-
-    [ "$name" == "$params" ] && name="VLESS"
-
-    local security network flow sni
-    if [[ "$params" == *"security="* ]]; then
-        security=$(echo "$params" | grep -o 'security=[^&]*' | cut -d'=' -f2)
-    fi
-    if [[ "$params" == *"type="* ]]; then
-        network=$(echo "$params" | grep -o 'type=[^&]*' | cut -d'=' -f2)
-    fi
-    if [[ "$params" == *"flow="* ]]; then
-        flow=$(echo "$params" | grep -o 'flow=[^&]*' | cut -d'=' -f2)
-    fi
-    if [[ "$params" == *"sni="* ]]; then
-        sni=$(echo "$params" | grep -o 'sni=[^&]*' | cut -d'=' -f2)
-    fi
-
-    network=${network:-tcp}
-    local tag=$(sanitize_tag "$name")
-
-    local json="{\"type\":\"vless\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"uuid\":\"$uuid\",\"network\":\"$network\""
-
-    [ -n "$flow" ] && json+=',\"flow\":\"'$flow'\"'
-    if [ "$security" == "tls" ] || [ "$security" == "reality" ]; then
-        json+=',\"tls\":{\"enabled\":true,\"server_name\":\"'$sni'\"}'
-    fi
-
-    echo "$json}"
-}
-
-# Parse trojan:// URI
-parse_trojan() {
-    local uri="$1"
-    local rest="${uri#trojan://}"
-    local password="${rest%%@*}"
-    rest="${rest#*@}"
-
-    local server_port="${rest%%\?*}"
-    local server="${server_port%:*}"
-    local port="${server_port##*:}"
-
-    local params="${rest#*\?}"
-    local name="${params##*#}"
-    params="${params%#*}"
-
-    [ "$name" == "$params" ] && name="Trojan"
-
-    local sni
-    if [[ "$params" == *"sni="* ]]; then
-        sni=$(echo "$params" | grep -o 'sni=[^&]*' | cut -d'=' -f2)
-    fi
-
-    local tag=$(sanitize_tag "$name")
-    echo "{\"type\":\"trojan\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\",\"tls\":{\"enabled\":true,\"server_name\":\"${sni:-$server}\"}}"
-}
-
-# Parse ss:// URI
-parse_shadowsocks() {
-    local uri="$1"
-    local encoded="${uri#ss://}"
-    local name="${encoded##*#}"
-    encoded="${encoded%#*}"
-
-    local decoded=$(echo "$encoded" | base64 -d 2>/dev/null || echo "$encoded")
-
-    if [[ "$decoded" == *@* ]]; then
-        local auth="${decoded%%@*}"
-        local server_port="${decoded#*@}"
-        local server="${server_port%:*}"
-        local port="${server_port##*:}"
-        local method="${auth%%:*}"
-        local password="${auth#*:}"
-
-        [ "$name" == "$encoded" ] && name="${server}:${port}"
-
-        local tag=$(sanitize_tag "$name")
-        echo "{\"type\":\"shadowsocks\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"method\":\"$method\",\"password\":\"$password\"}"
-    fi
-}
-
-# Parse URI list
-parse_uri_list() {
-    local content="$1"
-    local result="["
-
-    while IFS= read -r line; do
-        line=$(echo "$line" | tr -d '\r\n')
-        [ -z "$line" ] && continue
-        [[ "$line" == \#* ]] && continue
-
-        local proxy_json=""
-        case "$line" in
-            vmess://*)  proxy_json=$(parse_vmess "$line") ;;
-            vless://*)  proxy_json=$(parse_vless "$line") ;;
-            trojan://*) proxy_json=$(parse_trojan "$line") ;;
-            ss://*)     proxy_json=$(parse_shadowsocks "$line") ;;
-        esac
-
-        if [ -n "$proxy_json" ]; then
-            result+="$proxy_json,"
-        fi
-    done <<< "$content"
-
-    echo "${result%,}]"
-}
-
-# Generate sing-box config using Python for proper JSON handling
+# Generate sing-box config using Python
 generate_config() {
     local proxies_json="$1"
     local config_file="$2"
-    local default_tag=$(echo "$proxies_json" | jq -r '.[0].tag // "proxy"')
 
     mkdir -p "$(dirname "$config_file")"
 
-    # Use Python to generate the config (more reliable than bash)
-    python3 << EOF
-import json
+    python3 << 'EOF'
+import json, sys
 
-proxies = json.loads('''$proxies_json''')
-tags = [p['tag'] for p in proxies]
-first_tag = tags[0] if tags else 'proxy'
+try:
+    proxies = json.loads('''$proxies_json''')
+    if isinstance(proxies, str):
+        proxies = json.loads(proxies)
 
-config = {
-    "log": {"level": "warn"},
-    "inbounds": [
-        {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": $SOCKS_PORT},
-        {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": $HTTP_PORT}
-    ],
-    "outbounds": [
-        {"type": "direct", "tag": "direct"},
-        {"type": "selector", "tag": "proxy", "outbounds": tags, "default": first_tag}
-    ] + proxies,
-    "route": {
-        "default_domain_resolver": "local-dns",
-        "rules": [{"ip_is_private": True, "action": "direct"}],
-        "final": "proxy",
-        "auto_detect_interface": True
-    },
-    "dns": {
-        "servers": [{"tag": "local-dns", "type": "udp", "server": "223.5.5.5"}],
-        "final": "local-dns",
-        "strategy": "prefer_ipv4"
-    },
-    "experimental": {
-        "clash_api": {
-            "external_controller": "127.0.0.1:$API_PORT"
+    if not proxies:
+        print("No valid proxies found", file=sys.stderr)
+        exit(1)
+
+    tags = [p['tag'] for p in proxies]
+    first_tag = tags[0] if tags else 'proxy'
+
+    config = {
+        "log": {"level": "warn"},
+        "inbounds": [
+            {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": $SOCKS_PORT},
+            {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": $HTTP_PORT}
+        ],
+        "outbounds": [
+            {"type": "direct", "tag": "direct"},
+            {"type": "selector", "tag": "proxy", "outbounds": tags, "default": first_tag}
+        ] + proxies,
+        "route": {
+            "default_domain_resolver": "local-dns",
+            "rules": [{"ip_is_private": True, "action": "direct"}],
+            "final": "proxy",
+            "auto_detect_interface": True
+        },
+        "dns": {
+            "servers": [{"tag": "local-dns", "type": "udp", "server": "223.5.5.5"}],
+            "final": "local-dns",
+            "strategy": "prefer_ipv4"
+        },
+        "experimental": {
+            "clash_api": {
+                "external_controller": "127.0.0.1:$API_PORT"
+            }
         }
     }
-}
 
-with open('$config_file', 'w') as f:
-    json.dump(config, f, indent=2)
+    with open('$config_file', 'w') as f:
+        json.dump(config, f, indent=2)
+except Exception as e:
+    print(f"Error generating config: {e}", file=sys.stderr)
+    exit(1)
 EOF
 
     log_info "Config written to $config_file"
@@ -436,12 +279,14 @@ main() {
 
     local proxies_json="[]"
 
-    if echo "$content" | head -5 | grep -q 'proxies:'; then
+    # Check for Clash YAML format
+    if echo "$content" | head -10 | grep -q 'proxies:'; then
         log_info "Detected Clash YAML format"
         proxies_json=$(parse_clash_yaml "$content")
     else
         log_info "Detected URI list format"
-        proxies_json=$(parse_uri_list "$content")
+        log_warn "URI list parsing not yet implemented"
+        proxies_json="[]"
     fi
 
     if ! command -v jq &> /dev/null; then
@@ -449,16 +294,30 @@ main() {
         exit 1
     fi
 
-    local proxy_count=$(echo "$proxies_json" | jq 'length')
+    if ! command -v python3 &> /dev/null; then
+        log_error "python3 is required. Install with your system package manager"
+        exit 1
+    fi
+
+    # Collect proxies into array
+    local result="["
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        result+="$line,"
+    done <<< "$proxies_json"
+    result="${result%,}]"
+
+    local proxy_count=$(echo "$result" | jq 'length')
     log_info "Found $proxy_count proxies"
 
     if [ "$proxy_count" -eq 0 ]; then
         log_error "No proxies found in subscription"
+        log_info "Check your subscription URL and ensure it returns Clash YAML format"
         exit 1
     fi
 
-    echo "$proxies_json" > "$PROXY_CACHE"
-    generate_config "$proxies_json" "$CONFIG_FILE"
+    echo "$result" > "$PROXY_CACHE"
+    generate_config "$result" "$CONFIG_FILE"
 
     log_info "Starting sing-box..."
     sing-box run -c "$CONFIG_FILE" &
