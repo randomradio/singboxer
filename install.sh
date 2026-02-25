@@ -45,17 +45,33 @@ main() {
     mkdir -p "$BIN_DIR"
     mkdir -p "$HOME/.config/sing-box"
 
-    # Get script directory
+    # Get script directory (where install.sh is located)
     local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-    # Copy/make scripts executable
-    log_info "Installing scripts..."
+    # Look for scripts in bin/ subdirectory or current directory
+    local src_dir=""
+    if [ -d "$script_dir/bin" ] && [ -f "$script_dir/bin/singboxer-start" ]; then
+        src_dir="$script_dir/bin"
+    elif [ -f "$script_dir/singboxer-start" ]; then
+        src_dir="$script_dir"
+    else
+        log_error "Cannot find singboxer scripts"
+        exit 1
+    fi
+
+    log_info "Installing scripts from $src_dir..."
+
+    # Copy and make scripts executable
     for script in singboxer-start singboxer-stop singboxer-status singboxer-list \
                   singboxer-select singboxer-env singboxer-check; do
-        local src="$script_dir/$script"
+        local src="$src_dir/$script"
+        local dest="$BIN_DIR/$script"
         if [ -f "$src" ]; then
-            chmod +x "$src"
+            cp "$src" "$dest"
+            chmod +x "$dest"
             log_info "  + $script"
+        else
+            log_error "  - $script not found"
         fi
     done
 
