@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# singboxer-env - Print proxy environment variables
+
+SOCKS_PORT="${SINGBOXER_SOCKS_PORT:-7890}"
+HTTP_PORT="${SINGBOXER_HTTP_PORT:-7891}"
+
+echo "export http_proxy=http://127.0.0.1:$HTTP_PORT"
+echo "export https_proxy=http://127.0.0.1:$HTTP_PORT"
+echo "export all_proxy=socks5://127.0.0.1:$SOCKS_PORT"
+echo "export no_proxy=localhost,127.0.0.1,::1"

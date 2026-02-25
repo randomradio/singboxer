@@ -1,0 +1,7 @@
+# singboxer subscription configuration
+# Add your subscription URLs below (one per line)
+# Lines starting with # are ignored
+
+# Example subscription URLs:
+# https://your-subscription-provider.com/link/xyz
+# file:///path/to/local/clash/config.yaml

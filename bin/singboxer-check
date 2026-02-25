@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# singboxer-check - Test connectivity through proxy
+
+SOCKS_PORT="${SINGBOXER_SOCKS_PORT:-7890}"
+HTTP_PORT="${SINGBOXER_HTTP_PORT:-7891}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+# Test proxy connectivity
+test_proxy() {
+    local proxy_url="$1"
+    local name="$2"
+
+    # Measure time
+    local start=$(date +%s%3N)
+    local ip=$(curl -s -x "$proxy_url" --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "")
+    local end=$(date +%s%3N)
+    local elapsed=$((end - start))
+
+    if [ -n "$ip" ]; then
+        log_info "$name: ${GREEN}OK${NC} (${elapsed}ms) - IP: $ip"
+        return 0
+    else
+        log_error "$name: Failed"
+        return 1
+    fi
+}
+
+# Test if proxy ports are accessible
+test_ports() {
+    echo ""
+    echo -e "${CYAN}=== Port Accessibility ===${NC}"
+
+    # Test SOCKS port
+    if nc -z 127.0.0.1 "$SOCKS_PORT" 2>/dev/null || \
+       command -v timeout &> /dev/null && timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$SOCKS_PORT" 2>/dev/null; then
+        log_info "SOCKS5 port $SOCKS_PORT is open"
+    else
+        log_warn "SOCKS5 port $SOCKS_PORT is not accessible"
+    fi
+
+    # Test HTTP port
+    if nc -z 127.0.0.1 "$HTTP_PORT" 2>/dev/null || \
+       command -v timeout &> /dev/null && timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$HTTP_PORT" 2>/dev/null; then
+        log_info "HTTP port $HTTP_PORT is open"
+    else
+        log_warn "HTTP port $HTTP_PORT is not accessible"
+    fi
+}
+
+# Test direct connection (no proxy)
+test_direct() {
+    echo ""
+    echo -e "${CYAN}=== Direct Connection ===${NC}"
+
+    local start=$(date +%s%3N)
+    local ip=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "")
+    local end=$(date +%s%3N)
+    local elapsed=$((end - start))
+
+    if [ -n "$ip" ]; then
+        echo -e "Direct: ${BLUE}OK${NC} (${elapsed}ms) - IP: $ip"
+    else
+        log_error "Direct connection failed"
+    fi
+}
+
+# Test through proxies
+test_through_proxies() {
+    echo ""
+    echo -e "${CYAN}=== Proxy Connection Test ===${NC}"
+
+    test_proxy "socks5://127.0.0.1:$SOCKS_PORT" "SOCKS5"
+    test_proxy "http://127.0.0.1:$HTTP_PORT" "HTTP"
+}
+
+# Test sing-box API
+test_api() {
+    echo ""
+    echo -e "${CYAN}=== Clash API Test ===${NC}"
+
+    local api_port="${SINGBOXER_API_PORT:-9090}"
+    local response=$(curl -s "http://127.0.0.1:$api_port" 2>/dev/null || echo "")
+
+    if [ -n "$response" ]; then
+        log_info "API is accessible"
+
+        if command -v jq &> /dev/null; then
+            local current=$(echo "$response" | jq -r '.proxies.proxy.now // "Unknown"' 2>/dev/null || echo "Unknown")
+            echo -e "Current proxy: ${BLUE}$current${NC}"
+        fi
+    else
+        log_warn "API is not accessible"
+    fi
+}
+
+# Main
+main() {
+    test_direct
+    test_ports
+    test_through_proxies
+    test_api
+    echo ""
+}
+
+main "$@"

@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# singboxer-list - List available proxies
+
+CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/singboxer}"
+PROXY_CACHE="$CONFIG_DIR/proxy_cache.json"
+
+API_PORT="${SINGBOXER_API_PORT:-9090}"
+API_URL="http://127.0.0.1:$API_PORT"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+GRAY='\033[0;90m'
+NC='\033[0m'
+
+# Get current proxy
+get_current_proxy() {
+    local response=$(curl -s "$API_URL/proxies" 2>/dev/null || echo "")
+    if [ -z "$response" ]; then
+        echo ""
+        return 1
+    fi
+
+    if command -v jq &> /dev/null; then
+        echo "$response" | jq -r '.proxies.proxy.now // ""' 2>/dev/null || echo ""
+    else
+        echo "$response" | grep -o '"now":"[^"]*"' | cut -d'"' -f4 || echo ""
+    fi
+}
+
+# Sanitize name for tag comparison
+sanitize_tag() {
+    echo "$1" | sed 's/[^a-zA-Z0-9_-]/-/g' | sed 's/-\+/-/g' | sed 's/^-//;s-$//'
+}
+
+# Main
+main() {
+    if [ ! -f "$PROXY_CACHE" ]; then
+        echo -e "${RED}No proxy cache found${NC}"
+        echo "Run 'singboxer-start' first"
+        exit 1
+    fi
+
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}jq is required${NC}"
+        exit 1
+    fi
+
+    local current=$(get_current_proxy)
+
+    echo ""
+    echo -e "${CYAN}=== Available Proxies ===${NC}"
+    echo ""
+
+    local count=0
+    jq -r '.[] | @json' "$PROXY_CACHE" 2>/dev/null | while read -r proxy; do
+        count=$((count + 1))
+
+        local name=$(echo "$proxy" | jq -r '.tag // .name // "Unknown"')
+        local type=$(echo "$proxy" | jq -r '.type // "unknown"')
+        local server=$(echo "$proxy" | jq -r '.server // "unknown"')
+        local port=$(echo "$proxy" | jq -r '.server_port // "0"')
+
+        # Check if this is the current proxy
+        local tag=$(sanitize_tag "$name")
+        local indicator="  "
+        if [ "$tag" == "$current" ]; then
+            indicator="${GREEN}*${NC} "
+        fi
+
+        # Format: number) [type] name (server:port)
+        printf "%s${GRAY}%2d)${NC} ${BLUE}[%s]${NC} %s ${GRAY}(%s:%s)${NC}\n" \
+            "$indicator" "$count" "$type" "$name" "$server" "$port"
+    done
+
+    echo ""
+    echo -e "Use: ${GREEN}singboxer-select <number>${NC} or ${GREEN}singboxer-select <name>${NC}"
+    echo ""
+}
+
+main "$@"

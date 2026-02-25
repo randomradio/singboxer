@@ -1,0 +1,482 @@
+#!/usr/bin/env bash
+# singboxer-start - Fetch subscription, generate config, start sing-box
+
+set -e
+
+# Config directories
+CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/singboxer}"
+SINGBOX_DIR="${SINGBOX_DIR:-$HOME/.config/sing-box}"
+SUBSCRIPTION_FILE="$CONFIG_DIR/subscriptions.conf"
+PROXY_CACHE="$CONFIG_DIR/proxy_cache.json"
+CONFIG_FILE="$SINGBOX_DIR/config.json"
+PID_FILE="$CONFIG_DIR/sing-box.pid"
+
+# Ports
+SOCKS_PORT="${SINGBOXER_SOCKS_PORT:-7890}"
+HTTP_PORT="${SINGBOXER_HTTP_PORT:-7891}"
+API_PORT="${SINGBOXER_API_PORT:-9090}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Check if sing-box is installed
+check_singbox() {
+    command -v sing-box &> /dev/null && return 0
+    log_error "sing-box not found in PATH"
+    log_info "Install from https://github.com/SagerNet/sing-box"
+    return 1
+}
+
+# Check if already running
+check_running() {
+    if [ -f "$PID_FILE" ]; then
+        local pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            log_warn "sing-box is already running (PID: $pid)"
+            return 0
+        fi
+        rm -f "$PID_FILE"
+    fi
+    return 1
+}
+
+# Fetch subscription content
+fetch_subscription() {
+    local url="$1"
+
+    if [[ "$url" == file://* ]]; then
+        local filepath="${url#file://}"
+        if [ -f "$filepath" ]; then
+            cat "$filepath"
+            return 0
+        fi
+        log_error "File not found: $filepath"
+        return 1
+    fi
+
+    log_info "Fetching subscription from $url"
+    curl -sL --connect-timeout 10 --max-time 30 -H "User-Agent: clash" "$url"
+}
+
+# Decode base64 if needed
+decode_content() {
+    local content="$1"
+
+    if echo "$content" | tr -d '\r\n' | grep -qE '^[A-Za-z0-9+/=]+$'; then
+        local decoded=$(echo "$content" | base64 -d 2>/dev/null || echo "")
+        if [ -n "$decoded" ]; then
+            if echo "$decoded" | head -1 | grep -qE '(proxies:|{|proxies)'; then
+                echo "$decoded"
+                return 0
+            fi
+        fi
+    fi
+    echo "$content"
+}
+
+# Sanitize name for tag
+sanitize_tag() {
+    echo "$1" | sed 's/[^a-zA-Z0-9_-]/-/g' | sed 's/-\+/-/g' | sed 's/^-//;s-$//'
+}
+
+# Parse Clash YAML to sing-box proxy JSON
+parse_clash_yaml() {
+    local content="$1"
+    local tmp_yaml="/tmp/singboxer-$$.yaml"
+
+    echo "$content" > "$tmp_yaml"
+
+    # Check for jq
+    if ! command -v jq &> /dev/null; then
+        rm -f "$tmp_yaml"
+        echo "[]"
+        return 1
+    fi
+
+    local proxies_json="[]"
+
+    # Use yq if available
+    if command -v yq &> /dev/null; then
+        local clash_proxies=$(yq '.proxies // []' "$tmp_yaml" 2>/dev/null)
+        rm -f "$tmp_yaml"
+        convert_clash_proxies "$clash_proxies"
+        return $?
+    fi
+
+    # Fallback: python
+    if command -v python3 &> /dev/null; then
+        local clash_proxies=$(python3 -c "
+import sys, yaml, json
+try:
+    data = yaml.safe_load(open('$tmp_yaml'))
+    proxies = data.get('proxies', [])
+    print(json.dumps(proxies if proxies else []))
+except:
+    print('[]')
+" 2>/dev/null)
+        rm -f "$tmp_yaml"
+        convert_clash_proxies "$clash_proxies"
+        return $?
+    fi
+
+    rm -f "$tmp_yaml"
+    echo "[]"
+    return 1
+}
+
+# Convert Clash proxy JSON to sing-box format
+convert_clash_proxies() {
+    local clash_json="$1"
+
+    if ! command -v jq &> /dev/null; then
+        echo "[]"
+        return 1
+    fi
+
+    local result="["
+
+    echo "$clash_json" | jq -c '.[]' 2>/dev/null | while read -r proxy; do
+        local type=$(echo "$proxy" | jq -r '.type // ""')
+        local name=$(echo "$proxy" | jq -r '.name // "Unknown"')
+        local server=$(echo "$proxy" | jq -r '.server // "unknown"')
+        local port=$(echo "$proxy" | jq -r '.port // "0"')
+        local tag=$(sanitize_tag "$name")
+
+        # Validate server
+        [[ "$server" != *.* ]] && continue
+
+        case "$type" in
+            ss|shadowsocks)
+                local method=$(echo "$proxy" | jq -r '.cipher // "aes-256-gcm"')
+                local password=$(echo "$proxy" | jq -r '.password // ""')
+                echo "{\"type\":\"shadowsocks\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"method\":\"$method\",\"password\":\"$password\"},"
+                ;;
+            vmess)
+                local uuid=$(echo "$proxy" | jq -r '.uuid // ""')
+                local alter_id=$(echo "$proxy" | jq -r '.alterId // "0"')
+                local cipher=$(echo "$proxy" | jq -r '.cipher // "auto"')
+                local network=$(echo "$proxy" | jq -r '.network // "tcp"')
+                local tls=$(echo "$proxy" | jq -r 'select(.tls == true) | "true" // ""')
+                local json="{\"type\":\"vmess\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"uuid\":\"$uuid\",\"alter_id\":$alter_id,\"security\":\"$cipher\",\"network\":\"$network\""
+                if [ -n "$tls" ]; then
+                    json+=',\"tls\":{\"enabled\":true}'
+                fi
+                echo "$json},"
+                ;;
+            vless)
+                local uuid=$(echo "$proxy" | jq -r '.uuid // ""')
+                local flow=$(echo "$proxy" | jq -r '.flow // ""')
+                local network=$(echo "$proxy" | jq -r '.network // "tcp"')
+                local tls=$(echo "$proxy" | jq -r 'select(.tls == true) | "true" // ""')
+                local json="{\"type\":\"vless\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"uuid\":\"$uuid\",\"network\":\"$network\""
+                [ -n "$flow" ] && json+=',\"flow\":\"'$flow'\"'
+                if [ -n "$tls" ]; then
+                    json+=',\"tls\":{\"enabled\":true}'
+                fi
+                echo "$json},"
+                ;;
+            trojan)
+                local password=$(echo "$proxy" | jq -r '.password // ""')
+                [ -z "$password" ] && continue
+                echo "{\"type\":\"trojan\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\",\"tls\":{\"enabled\":true}},"
+                ;;
+            hysteria2|hy2)
+                local password=$(echo "$proxy" | jq -r '.password // ""')
+                echo "{\"type\":\"hysteria2\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\"},"
+                ;;
+        esac
+    done | sed '$ s/,$//' | tr -d '\n'
+
+    echo "]"
+}
+
+# Parse vmess:// URI
+parse_vmess() {
+    local uri="$1"
+    local encoded="${uri#vmess://}"
+    local decoded=$(echo "$encoded" | base64 -d 2>/dev/null || echo "")
+    [ -z "$decoded" ] && return ""
+
+    if ! command -v jq &> /dev/null; then
+        return ""
+    fi
+
+    local name=$(echo "$decoded" | jq -r '.ps // .name // "VMess"')
+    local add=$(echo "$decoded" | jq -r '.add // .address // "unknown"')
+    local port=$(echo "$decoded" | jq -r '.port // "0"')
+    local id=$(echo "$decoded" | jq -r '.id // .uuid // ""')
+    local scy=$(echo "$decoded" | jq -r '.scy // .cipher // "auto"')
+    local net=$(echo "$decoded" | jq -r '.net // .network // "tcp"')
+    local tls=$(echo "$decoded" | jq -r '.tls // ""')
+    local sni=$(echo "$decoded" | jq -r '.sni // ""')
+    local path=$(echo "$decoded" | jq -r '.path // ""')
+
+    [[ "$add" != *.* ]] && return ""
+
+    local tag=$(sanitize_tag "$name")
+    local json="{\"type\":\"vmess\",\"tag\":\"$tag\",\"server\":\"$add\",\"server_port\":$port,\"uuid\":\"$id\",\"alter_id\":0,\"security\":\"$scy\",\"network\":\"$net\""
+
+    if [ -n "$tls" ] && [ "$tls" != "none" ]; then
+        json+=',\"tls\":{\"enabled\":true,\"server_name\":\"'$sni'\"}'
+    fi
+    if [ "$net" == "ws" ] && [ -n "$path" ]; then
+        json+=',\"transport\":{\"type\":\"ws\",\"path\":\"'$path'\"}'
+    fi
+
+    echo "$json}"
+}
+
+# Parse vless:// URI
+parse_vless() {
+    local uri="$1"
+    local rest="${uri#vless://}"
+    local uuid="${rest%%@*}"
+    rest="${rest#*@}"
+
+    local server_port="${rest%%\?*}"
+    local server="${server_port%:*}"
+    local port="${server_port##*:}"
+
+    local params="${rest#*\?}"
+    local name="${params##*#}"
+    params="${params%#*}"
+
+    [ "$name" == "$params" ] && name="VLESS"
+
+    local security network flow sni
+    if [[ "$params" == *"security="* ]]; then
+        security=$(echo "$params" | grep -o 'security=[^&]*' | cut -d'=' -f2)
+    fi
+    if [[ "$params" == *"type="* ]]; then
+        network=$(echo "$params" | grep -o 'type=[^&]*' | cut -d'=' -f2)
+    fi
+    if [[ "$params" == *"flow="* ]]; then
+        flow=$(echo "$params" | grep -o 'flow=[^&]*' | cut -d'=' -f2)
+    fi
+    if [[ "$params" == *"sni="* ]]; then
+        sni=$(echo "$params" | grep -o 'sni=[^&]*' | cut -d'=' -f2)
+    fi
+
+    network=${network:-tcp}
+    local tag=$(sanitize_tag "$name")
+
+    local json="{\"type\":\"vless\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"uuid\":\"$uuid\",\"network\":\"$network\""
+
+    [ -n "$flow" ] && json+=',\"flow\":\"'$flow'\"'
+    if [ "$security" == "tls" ] || [ "$security" == "reality" ]; then
+        json+=',\"tls\":{\"enabled\":true,\"server_name\":\"'$sni'\"}'
+    fi
+
+    echo "$json}"
+}
+
+# Parse trojan:// URI
+parse_trojan() {
+    local uri="$1"
+    local rest="${uri#trojan://}"
+    local password="${rest%%@*}"
+    rest="${rest#*@}"
+
+    local server_port="${rest%%\?*}"
+    local server="${server_port%:*}"
+    local port="${server_port##*:}"
+
+    local params="${rest#*\?}"
+    local name="${params##*#}"
+    params="${params%#*}"
+
+    [ "$name" == "$params" ] && name="Trojan"
+
+    local sni
+    if [[ "$params" == *"sni="* ]]; then
+        sni=$(echo "$params" | grep -o 'sni=[^&]*' | cut -d'=' -f2)
+    fi
+
+    local tag=$(sanitize_tag "$name")
+    echo "{\"type\":\"trojan\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\",\"tls\":{\"enabled\":true,\"server_name\":\"${sni:-$server}\"}}"
+}
+
+# Parse ss:// URI
+parse_shadowsocks() {
+    local uri="$1"
+    local encoded="${uri#ss://}"
+    local name="${encoded##*#}"
+    encoded="${encoded%#*}"
+
+    local decoded=$(echo "$encoded" | base64 -d 2>/dev/null || echo "$encoded")
+
+    if [[ "$decoded" == *@* ]]; then
+        local auth="${decoded%%@*}"
+        local server_port="${decoded#*@}"
+        local server="${server_port%:*}"
+        local port="${server_port##*:}"
+        local method="${auth%%:*}"
+        local password="${auth#*:}"
+
+        [ "$name" == "$encoded" ] && name="${server}:${port}"
+
+        local tag=$(sanitize_tag "$name")
+        echo "{\"type\":\"shadowsocks\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"method\":\"$method\",\"password\":\"$password\"}"
+    fi
+}
+
+# Parse URI list
+parse_uri_list() {
+    local content="$1"
+    local result="["
+
+    while IFS= read -r line; do
+        line=$(echo "$line" | tr -d '\r\n')
+        [ -z "$line" ] && continue
+        [[ "$line" == \#* ]] && continue
+
+        local proxy_json=""
+        case "$line" in
+            vmess://*)  proxy_json=$(parse_vmess "$line") ;;
+            vless://*)  proxy_json=$(parse_vless "$line") ;;
+            trojan://*) proxy_json=$(parse_trojan "$line") ;;
+            ss://*)     proxy_json=$(parse_shadowsocks "$line") ;;
+        esac
+
+        if [ -n "$proxy_json" ]; then
+            result+="$proxy_json,"
+        fi
+    done <<< "$content"
+
+    echo "${result%,}]"
+}
+
+# Generate sing-box config using Python for proper JSON handling
+generate_config() {
+    local proxies_json="$1"
+    local config_file="$2"
+    local default_tag=$(echo "$proxies_json" | jq -r '.[0].tag // "proxy"')
+
+    mkdir -p "$(dirname "$config_file")"
+
+    # Use Python to generate the config (more reliable than bash)
+    python3 << EOF
+import json
+
+proxies = json.loads('''$proxies_json''')
+tags = [p['tag'] for p in proxies]
+first_tag = tags[0] if tags else 'proxy'
+
+config = {
+    "log": {"level": "warn"},
+    "inbounds": [
+        {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": $SOCKS_PORT},
+        {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": $HTTP_PORT}
+    ],
+    "outbounds": [
+        {"type": "direct", "tag": "direct"},
+        {"type": "selector", "tag": "proxy", "outbounds": tags, "default": first_tag}
+    ] + proxies,
+    "route": {
+        "default_domain_resolver": "local-dns",
+        "rules": [{"ip_is_private": True, "action": "direct"}],
+        "final": "proxy",
+        "auto_detect_interface": True
+    },
+    "dns": {
+        "servers": [{"tag": "local-dns", "type": "udp", "server": "223.5.5.5"}],
+        "final": "local-dns",
+        "strategy": "prefer_ipv4"
+    },
+    "experimental": {
+        "clash_api": {
+            "external_controller": "127.0.0.1:$API_PORT"
+        }
+    }
+}
+
+with open('$config_file', 'w') as f:
+    json.dump(config, f, indent=2)
+EOF
+
+    log_info "Config written to $config_file"
+}
+
+# Main
+main() {
+    check_singbox || exit 1
+
+    if check_running; then
+        exit 0
+    fi
+
+    mkdir -p "$CONFIG_DIR" "$SINGBOX_DIR"
+
+    if [ ! -f "$SUBSCRIPTION_FILE" ]; then
+        log_error "Subscription file not found: $SUBSCRIPTION_FILE"
+        log_info "Create it with: echo 'https://your-subscription-url' > $SUBSCRIPTION_FILE"
+        exit 1
+    fi
+
+    local url=$(grep -v '^[[:space:]]*#' "$SUBSCRIPTION_FILE" | grep -v '^$' | head -1)
+    if [ -z "$url" ]; then
+        log_error "No subscription URL found in $SUBSCRIPTION_FILE"
+        exit 1
+    fi
+
+    local content=$(fetch_subscription "$url")
+    if [ -z "$content" ]; then
+        log_error "Failed to fetch subscription"
+        exit 1
+    fi
+
+    content=$(decode_content "$content")
+
+    local proxies_json="[]"
+
+    if echo "$content" | head -5 | grep -q 'proxies:'; then
+        log_info "Detected Clash YAML format"
+        proxies_json=$(parse_clash_yaml "$content")
+    else
+        log_info "Detected URI list format"
+        proxies_json=$(parse_uri_list "$content")
+    fi
+
+    if ! command -v jq &> /dev/null; then
+        log_error "jq is required. Install with: brew install jq"
+        exit 1
+    fi
+
+    local proxy_count=$(echo "$proxies_json" | jq 'length')
+    log_info "Found $proxy_count proxies"
+
+    if [ "$proxy_count" -eq 0 ]; then
+        log_error "No proxies found in subscription"
+        exit 1
+    fi
+
+    echo "$proxies_json" > "$PROXY_CACHE"
+    generate_config "$proxies_json" "$CONFIG_FILE"
+
+    log_info "Starting sing-box..."
+    sing-box run -c "$CONFIG_FILE" &
+    local pid=$!
+    echo "$pid" > "$PID_FILE"
+
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+        log_info "sing-box started (PID: $pid)"
+        log_info "SOCKS5: 127.0.0.1:$SOCKS_PORT"
+        log_info "HTTP:   127.0.0.1:$HTTP_PORT"
+        log_info "API:    127.0.0.1:$API_PORT"
+        log_info "Use 'singboxer-select' to change proxy"
+    else
+        log_error "sing-box failed to start"
+        rm -f "$PID_FILE"
+        exit 1
+    fi
+}
+
+main "$@"

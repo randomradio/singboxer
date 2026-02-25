@@ -1,5 +1,13 @@
-/target
-**/*.rs.bk
-*.pdb
-Cargo.lock
+# Editor and OS files
 .DS_Store
+*.swp
+*.swo
+*~
+
+# Subscriptions (may contain sensitive URLs)
+subscriptions.conf
+
+# Generated files
+proxy_cache.json
+sing-box.pid
+/tmp/singboxer-*
