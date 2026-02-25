@@ -161,26 +161,32 @@ pub fn generate_singbox_config(
 
     config.outbounds = outbounds;
 
-    // DNS configuration - simple format compatible with 1.12+
+    // DNS configuration - sing-box 1.12+ format
+    // New format uses "type" and "server" instead of "address"
     config.dns = Some(serde_json::json!({
         "servers": [
             {
-                "tag": "local",
-                "address": "223.5.5.5",
+                "tag": "local-dns",
+                "type": "udp",
+                "server": "223.5.5.5",
                 "detour": "direct"
             },
             {
-                "tag": "remote",
-                "address": "https://1.1.1.1/dns-query",
+                "tag": "remote-dns",
+                "type": "https",
+                "server": "1.1.1.1",
                 "detour": "proxy"
             }
         ],
-        "final": "local",
-        "strategy": "prefer_ipv4"
+        "final": "local-dns",
+        "strategy": "prefer_ipv4",
+        "disable_cache": false,
+        "disable_expire": false
     }));
 
-    // Route configuration - simple rules without deprecated geoip/geosite
+    // Route configuration - sing-box 1.12+ requires domain_resolver
     config.route = Some(serde_json::json!({
+        "default_domain_resolver": "local-dns",
         "rules": [
             // Private networks - direct
             {
