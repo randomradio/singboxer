@@ -371,7 +371,12 @@ impl SingBoxManager {
 
     /// Get the currently selected proxy from Clash API
     pub async fn get_selected_proxy(&self) -> Result<String> {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .build()
+            .context("Failed to build HTTP client")?;
+
         let url = "http://127.0.0.1:9090/proxies/proxy";
 
         let response = client.get(url)
@@ -392,7 +397,12 @@ impl SingBoxManager {
 
     /// Switch proxy via tag (uses default selector "proxy")
     pub async fn switch_proxy(&self, proxy_tag: &str) -> Result<()> {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .build()
+            .context("Failed to build HTTP client")?;
+
         let url = format!("http://127.0.0.1:9090/proxies/proxy");
 
         let response = client
@@ -401,10 +411,12 @@ impl SingBoxManager {
             .json(&serde_json::json!({ "name": proxy_tag }))
             .send()
             .await
-            .context("Failed to connect to Clash API")?;
+            .context("Failed to connect to Clash API - is sing-box running with Clash API enabled?")?;
 
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!("Clash API returned error: {}", response.status()));
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|_| "Unable to read response".to_string());
+            return Err(anyhow::anyhow!("Clash API returned error: {} - Body: {}", status, body));
         }
 
         Ok(())
