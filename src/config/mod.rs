@@ -117,20 +117,10 @@ pub fn generate_singbox_config(
 
     let mut outbounds = Vec::new();
 
-    // Add direct and block first
+    // Add direct outbound
     outbounds.push(serde_json::json!({
         "type": "direct",
         "tag": "direct"
-    }));
-
-    outbounds.push(serde_json::json!({
-        "type": "block",
-        "tag": "block"
-    }));
-
-    outbounds.push(serde_json::json!({
-        "type": "dns",
-        "tag": "dns-out"
     }));
 
     // Add selector for manual selection
@@ -162,48 +152,36 @@ pub fn generate_singbox_config(
 
     config.outbounds = outbounds;
 
-    // Add DNS configuration
+    // DNS configuration - simple format compatible with 1.12+
     config.dns = Some(serde_json::json!({
         "servers": [
             {
                 "tag": "local",
-                "address": "https://223.5.5.5/dns-query",
-                "strategy": "prefer_ipv4"
+                "address": "223.5.5.5",
+                "detour": "direct"
             },
             {
                 "tag": "remote",
                 "address": "https://1.1.1.1/dns-query",
-                "strategy": "prefer_ipv4",
-                "address_resolver": "local"
+                "detour": "proxy"
             }
         ],
         "final": "local",
-        "strategy": "prefer_ipv4",
-        "disable_cache": false
+        "strategy": "prefer_ipv4"
     }));
 
-    // Add routing rules with sniff configuration
+    // Route configuration - simple rules without deprecated geoip/geosite
     config.route = Some(serde_json::json!({
         "rules": [
-            // DNS queries
-            {
-                "protocol": "dns",
-                "outbound": "dns-out"
-            },
             // Private networks - direct
             {
-                "geoip": "private",
-                "outbound": "direct"
+                "ip_is_private": true,
+                "action": "direct"
             },
-            // China IPs - direct
+            // DNS queries - use route action
             {
-                "geoip": "cn",
-                "outbound": "direct"
-            },
-            // China domains - direct
-            {
-                "geosite": "cn",
-                "outbound": "direct"
+                "protocol": "dns",
+                "action": "hijack-dns"
             }
         ],
         "final": "proxy",

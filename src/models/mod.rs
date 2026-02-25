@@ -191,13 +191,11 @@ pub struct LogConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperimentalConfig {
-    #[serde(rename = "clash-api")]
     pub clash_api: Option<ClashApiConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClashApiConfig {
-    #[serde(rename = "external-controller")]
     pub external_controller: String,
     pub secret: Option<String>,
 }
