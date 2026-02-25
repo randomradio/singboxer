@@ -10,93 +10,71 @@ API_URL="http://127.0.0.1:$API_PORT"
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
 NC='\033[0m'
 
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Check if sing-box is running
-check_running() {
+check_api() {
     curl -s -f "$API_URL" > /dev/null 2>&1
 }
 
-# Get current proxy
-get_current_proxy() {
-    curl -s "$API_URL/proxies" | jq -r '.proxies.proxy.now // ""' 2>/dev/null || echo ""
-}
-
-# Sanitize name for tag
-sanitize_tag() {
-    echo "$1" | sed 's/[^a-zA-Z0-9_-]/-/g' | sed 's/-\+/-/g' | sed 's/^-//;s-$//'
-}
-
-# Get proxy by index
 get_proxy_by_index() {
     local index="$1"
+    python3 - "$PROXY_CACHE" "$index" << 'PYTHON'
+import sys, json
 
-    if ! command -v jq &> /dev/null; then
-        log_error "jq is required for index selection"
-        exit 1
-    fi
+cache_file = sys.argv[1]
+index = int(sys.argv[2])
 
-    if [ ! -f "$PROXY_CACHE" ]; then
-        log_error "No proxy cache found"
-        exit 1
-    fi
+with open(cache_file) as f:
+    proxies = json.load(f)
 
-    jq -r ".[$((index - 1))].tag // empty" "$PROXY_CACHE" 2>/dev/null
+if 1 <= index <= len(proxies):
+    print(proxies[index - 1]['tag'])
+PYTHON
 }
 
-# Get proxy by name (fuzzy match)
 get_proxy_by_name() {
     local name="$1"
-    name=$(sanitize_tag "$name")
+    python3 - "$PROXY_CACHE" "$name" << 'PYTHON'
+import sys, json
 
-    if ! command -v jq &> /dev/null; then
-        log_error "jq is required for name selection"
-        exit 1
-    fi
+cache_file = sys.argv[1]
+name = sys.argv[2].lower()
 
-    if [ ! -f "$PROXY_CACHE" ]; then
-        log_error "No proxy cache found"
-        exit 1
-    fi
+with open(cache_file) as f:
+    proxies = json.load(f)
 
-    # Try exact match first
-    local tag=$(jq -r ".[] | select(.tag == \"$name\") | .tag" "$PROXY_CACHE" 2>/dev/null | head -1)
-
-    # Try partial match
-    if [ -z "$tag" ]; then
-        tag=$(jq -r ".[] | select(.tag | contains(\"$name\")) | .tag" "$PROXY_CACHE" 2>/dev/null | head -1)
-    fi
-
-    echo "$tag"
+for p in proxies:
+    tag = p.get('tag', '')
+    if name in tag.lower():
+        print(tag)
+        break
+PYTHON
 }
 
-# Select proxy via API
+get_current_proxy() {
+    local response=$(curl -s "$API_URL/proxies" 2>/dev/null || echo "")
+    if [ -z "$response" ]; then
+        echo ""
+        return 1
+    fi
+    if command -v jq &> /dev/null; then
+        echo "$response" | jq -r '.proxies.proxy.now // ""' 2>/dev/null || echo ""
+    else
+        echo "$response" | grep -o '"now":"[^"]*"' | cut -d'"' -f4 || echo ""
+    fi
+}
+
 select_proxy() {
     local tag="$1"
-
     local response=$(curl -s -X PUT "$API_URL/proxies" \
         -H "Content-Type: application/json" \
         -d "{\"name\":\"$tag\"}" 2>/dev/null)
-
-    if [ -n "$response" ]; then
-        return 0
-    fi
-
-    return 1
+    [ -n "$response" ]
 }
 
-# Show usage
 show_usage() {
     echo "Usage: singboxer-select <number|name>"
     echo ""
@@ -108,7 +86,6 @@ show_usage() {
     echo "Use 'singboxer-list' to see available proxies"
 }
 
-# Main
 main() {
     if [ $# -eq 0 ]; then
         show_usage
@@ -117,22 +94,24 @@ main() {
 
     local selection="$1"
 
-    # Handle help
     if [[ "$selection" == "-h" ]] || [[ "$selection" == "--help" ]]; then
         show_usage
         exit 0
     fi
 
-    # Check if sing-box is running
-    if ! check_running; then
+    if ! check_api; then
         log_error "sing-box is not running or API is not accessible"
         log_error "Run 'singboxer-start' first"
         exit 1
     fi
 
+    if ! command -v python3 &> /dev/null; then
+        log_error "python3 is required"
+        exit 1
+    fi
+
     local tag=""
 
-    # Check if selection is a number
     if [[ "$selection" =~ ^[0-9]+$ ]]; then
         tag=$(get_proxy_by_index "$selection")
         if [ -z "$tag" ]; then
@@ -147,9 +126,8 @@ main() {
         fi
     fi
 
-    # Select the proxy
+    local old=$(get_current_proxy)
     if select_proxy "$tag"; then
-        local old=$(get_current_proxy)
         log_info "Proxy changed: $old -> $tag"
     else
         log_error "Failed to change proxy"

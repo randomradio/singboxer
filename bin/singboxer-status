@@ -11,64 +11,56 @@ API_URL="http://127.0.0.1:$API_PORT"
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Check if sing-box is running
 check_running() {
     local pid=""
     if [ -f "$PID_FILE" ]; then
         pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
     fi
-
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         echo "$pid"
         return 0
     fi
-
-    # Try pgrep
     pid=$(pgrep sing-box | head -1 || echo "")
     if [ -n "$pid" ]; then
         echo "$pid"
         return 0
     fi
-
     return 1
 }
 
-# Get current proxy from Clash API
 get_current_proxy() {
     local response=$(curl -s "$API_URL/proxies" 2>/dev/null || echo "")
     if [ -z "$response" ]; then
         echo "Unknown"
         return 1
     fi
-
     if command -v jq &> /dev/null; then
         echo "$response" | jq -r '.proxies.proxy.now // "Unknown"' 2>/dev/null || echo "Unknown"
     else
-        # Fallback: grep
         echo "$response" | grep -o '"now":"[^"]*"' | cut -d'"' -f4 || echo "Unknown"
     fi
 }
 
-# Main
+get_proxy_count() {
+    if [ -f "$PROXY_CACHE" ] && command -v python3 &> /dev/null; then
+        python3 -c "import json; print(len(json.load(open('$PROXY_CACHE'))))" 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
+
 main() {
     echo ""
     echo -e "${CYAN}=== singboxer Status ===${NC}"
     echo ""
 
-    # Check running status
     local pid
     if pid=$(check_running); then
         log_info "sing-box is running (PID: $pid)"
@@ -78,31 +70,24 @@ main() {
         return 1
     fi
 
-    # Get current proxy
     local current=$(get_current_proxy)
     echo -e "Current Proxy: ${BLUE}$current${NC}"
 
-    # Check proxy count
-    if [ -f "$PROXY_CACHE" ] && command -v jq &> /dev/null; then
-        local count=$(jq 'length' "$PROXY_CACHE" 2>/dev/null || echo "0")
-        echo -e "Total Proxies: ${BLUE}$count${NC}"
-    fi
+    local count=$(get_proxy_count)
+    echo -e "Total Proxies: ${BLUE}$count${NC}"
 
-    # Test connectivity to API
     if curl -s -f "$API_URL" > /dev/null 2>&1; then
         echo -e "API Status: ${GREEN}Connected${NC}"
     else
         echo -e "API Status: ${RED}Disconnected${NC}"
     fi
 
-    # Show proxy endpoints
     echo ""
     echo "Proxy Endpoints:"
     echo "  SOCKS5: 127.0.0.1:${SINGBOXER_SOCKS_PORT:-7890}"
     echo "  HTTP:   127.0.0.1:${SINGBOXER_HTTP_PORT:-7891}"
     echo "  API:    127.0.0.1:$API_PORT"
     echo ""
-
     echo "Useful commands:"
     echo "  singboxer-list     - List available proxies"
     echo "  singboxer-select   - Change proxy"

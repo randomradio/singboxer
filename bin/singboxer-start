@@ -26,7 +26,6 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Check if sing-box is installed
 check_singbox() {
     command -v sing-box &> /dev/null && return 0
     log_error "sing-box not found in PATH"
@@ -34,7 +33,6 @@ check_singbox() {
     return 1
 }
 
-# Check if already running
 check_running() {
     if [ -f "$PID_FILE" ]; then
         local pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
@@ -47,10 +45,8 @@ check_running() {
     return 1
 }
 
-# Fetch subscription content
 fetch_subscription() {
     local url="$1"
-
     if [[ "$url" == file://* ]]; then
         local filepath="${url#file://}"
         if [ -f "$filepath" ]; then
@@ -60,15 +56,12 @@ fetch_subscription() {
         log_error "File not found: $filepath"
         return 1
     fi
-
     log_info "Fetching subscription from $url"
     curl -sL --connect-timeout 10 --max-time 30 -H "User-Agent: clash" "$url"
 }
 
-# Decode base64 if needed
 decode_content() {
     local content="$1"
-
     if echo "$content" | tr -d '\r\n' | grep -qE '^[A-Za-z0-9+/=]+$'; then
         local decoded=$(echo "$content" | base64 -d 2>/dev/null || echo "")
         if [ -n "$decoded" ]; then
@@ -81,130 +74,200 @@ decode_content() {
     echo "$content"
 }
 
-# Sanitize name for tag - use tr for portability
-sanitize_tag() {
-    echo "$1" | tr -c 'a-zA-Z0-9_-\n' '-' | tr -s '-' | sed 's/^-//;s/-$//'
-}
-
-# Parse Clash YAML to sing-box proxy JSON
+# Convert Clash YAML to sing-box outbounds using Python
 parse_clash_yaml() {
     local content="$1"
 
-    if ! command -v jq &> /dev/null; then
-        echo "[]"
-        return 1
-    fi
+    python3 - "$content" << 'PYTHON'
+import sys, json, yaml, re
 
-    local proxies_json="[]"
+def sanitize_tag(name):
+    # Replace non-alphanumeric chars with dash
+    return re.sub(r'[^a-zA-Z0-9_-]+', '-', name).strip('-')
 
-    # Use yq if available
-    if command -v yq &> /dev/null; then
-        local clash_proxies=$(echo "$content" | yq '.proxies // []' 2>/dev/null)
-        convert_clash_proxies "$clash_proxies"
-        return $?
-    fi
+def is_valid_server(server):
+    if not server or server == 'unknown':
+        return False
+    # Must have dot or be IP
+    if '.' not in server:
+        return False
+    # Filter out metadata patterns
+    metadata_keywords = ['当前', '剩余', '套餐', '流量', '到期', '重置', '网址', 'url', 'expire', 'traffic']
+    server_lower = server.lower()
+    for kw in metadata_keywords:
+        if kw in server_lower:
+            return False
+    # TLD check
+    if '.' in server:
+        tld = server.rsplit('.', 1)[-1]
+        if len(tld) < 2 or len(tld) > 10 or not tld.isalpha():
+            return False
+    return True
 
-    # Fallback: python
-    if command -v python3 &> /dev/null; then
-        local clash_proxies=$(echo "$content" | python3 -c "
-import sys, yaml, json
 try:
     data = yaml.safe_load(sys.stdin)
     proxies = data.get('proxies', [])
-    print(json.dumps(proxies if proxies else []))
-except:
-    print('[]')
-" 2>/dev/null)
-        convert_clash_proxies "$clash_proxies"
-        return $?
-    fi
+    outbounds = []
 
-    echo "[]"
-    return 1
+    for p in proxies:
+        name = p.get('name', 'Unknown')
+        server = p.get('server', '')
+        port = p.get('port', 0)
+        ptype = p.get('type', '')
+
+        if not is_valid_server(server):
+            continue
+        if port < 80:
+            continue
+
+        tag = sanitize_tag(name)
+        outbound = {'tag': tag, 'server': server, 'server_port': port}
+
+        if ptype in ('ss', 'shadowsocks'):
+            outbound['type'] = 'shadowsocks'
+            outbound['method'] = p.get('cipher', 'aes-256-gcm')
+            outbound['password'] = p.get('password', '')
+
+        elif ptype == 'vmess':
+            outbound['type'] = 'vmess'
+            outbound['uuid'] = p.get('uuid', '')
+            outbound['alter_id'] = p.get('alterId', 0)
+            outbound['security'] = p.get('cipher', 'auto')
+            outbound['network'] = p.get('network', 'tcp')
+            if p.get('tls'):
+                outbound['tls'] = {'enabled': True}
+
+        elif ptype == 'vless':
+            outbound['type'] = 'vless'
+            outbound['uuid'] = p.get('uuid', '')
+            outbound['network'] = p.get('network', 'tcp')
+            if p.get('flow'):
+                outbound['flow'] = p.get('flow')
+            if p.get('tls'):
+                outbound['tls'] = {'enabled': True}
+
+        elif ptype == 'trojan':
+            password = p.get('password', '')
+            if not password:
+                continue
+            outbound['type'] = 'trojan'
+            outbound['password'] = password
+            outbound['tls'] = {'enabled': True, 'server_name': p.get('sni', server)}
+
+        elif ptype in ('hysteria2', 'hy2'):
+            outbound['type'] = 'hysteria2'
+            outbound['password'] = p.get('password', '')
+            outbound['tls'] = {'enabled': True, 'server_name': p.get('sni', server)}
+
+        else:
+            continue
+
+        outbounds.append(outbound)
+
+    print(json.dumps(outbounds, indent=2))
+
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    print(json.dumps([]))
+PYTHON
 }
 
-# Convert Clash proxy JSON to sing-box format
-convert_clash_proxies() {
-    local clash_json="$1"
+parse_clash_proxies_yq() {
+    # Input is JSON from yq, convert to sing-box format using python
+    python3 << 'PYTHON'
+import sys, json, re
 
-    if ! command -v jq &> /dev/null; then
-        echo "[]"
-        return 1
-    fi
+def sanitize_tag(name):
+    return re.sub(r'[^a-zA-Z0-9_-]+', '-', name).strip('-')
 
-    echo "$clash_json" | jq -c '.[]' 2>/dev/null | while read -r proxy; do
-        local type=$(echo "$proxy" | jq -r '.type // ""')
-        local name=$(echo "$proxy" | jq -r '.name // "Unknown"')
-        local server=$(echo "$proxy" | jq -r '.server // "unknown"')
-        local port=$(echo "$proxy" | jq -r '.port // "0"')
-        local tag=$(sanitize_tag "$name")
+def is_valid_server(server):
+    if not server or server == 'unknown':
+        return False
+    if '.' not in server:
+        return False
+    metadata = ['当前', '剩余', '套餐', '流量', '到期', '重置', '网址', 'expire']
+    return not any(m in server for m in metadata)
 
-        # Validate server
-        [[ "$server" != *.* ]] && [[ "$server" != *:* ]] && continue
+try:
+    clash_proxies = json.load(sys.stdin)
+    outbounds = []
 
-        case "$type" in
-            ss|shadowsocks)
-                local method=$(echo "$proxy" | jq -r '.cipher // "aes-256-gcm"')
-                local password=$(echo "$proxy" | jq -r '.password // ""')
-                echo "{\"type\":\"shadowsocks\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"method\":\"$method\",\"password\":\"$password\"}"
-                ;;
-            vmess)
-                local uuid=$(echo "$proxy" | jq -r '.uuid // ""')
-                local alter_id=$(echo "$proxy" | jq -r '.alterId // "0"')
-                local cipher=$(echo "$proxy" | jq -r '.cipher // "auto"')
-                local network=$(echo "$proxy" | jq -r '.network // "tcp"')
-                local tls=$(echo "$proxy" | jq -r 'select(.tls == true) | "true" // ""')
-                local json="{\"type\":\"vmess\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"uuid\":\"$uuid\",\"alter_id\":$alter_id,\"security\":\"$cipher\",\"network\":\"$network\""
-                if [ -n "$tls" ]; then
-                    json+=',\"tls\":{\"enabled\":true}'
-                fi
-                echo "$json}"
-                ;;
-            vless)
-                local uuid=$(echo "$proxy" | jq -r '.uuid // ""')
-                local flow=$(echo "$proxy" | jq -r '.flow // ""')
-                local network=$(echo "$proxy" | jq -r '.network // "tcp"')
-                local tls=$(echo "$proxy" | jq -r 'select(.tls == true) | "true" // ""')
-                local json="{\"type\":\"vless\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"uuid\":\"$uuid\",\"network\":\"$network\""
-                [ -n "$flow" ] && json+=',\"flow\":\"'$flow'\"'
-                if [ -n "$tls" ]; then
-                    json+=',\"tls\":{\"enabled\":true}'
-                fi
-                echo "$json}"
-                ;;
-            trojan)
-                local password=$(echo "$proxy" | jq -r '.password // ""')
-                [ -z "$password" ] && continue
-                local sni=$(echo "$proxy" | jq -r '.sni // .servername // "'"$server"'"')
-                echo "{\"type\":\"trojan\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\",\"tls\":{\"enabled\":true,\"server_name\":\"$sni\"}}"
-                ;;
-            hysteria2|hy2)
-                local password=$(echo "$proxy" | jq -r '.password // ""')
-                local sni=$(echo "$proxy" | jq -r '.sni // "'"$server"'"')
-                echo "{\"type\":\"hysteria2\",\"tag\":\"$tag\",\"server\":\"$server\",\"server_port\":$port,\"password\":\"$password\",\"tls\":{\"enabled\":true,\"server_name\":\"$sni\"}}"
-                ;;
-        esac
-    done
+    for p in clash_proxies:
+        name = p.get('name', 'Unknown')
+        server = p.get('server', '')
+        port = p.get('port', 0)
+        ptype = p.get('type', '')
+
+        if not is_valid_server(server) or port < 80:
+            continue
+
+        tag = sanitize_tag(name)
+        outbound = {'tag': tag, 'server': server, 'server_port': port}
+
+        if ptype in ('ss', 'shadowsocks'):
+            outbound['type'] = 'shadowsocks'
+            outbound['method'] = p.get('cipher', 'aes-256-gcm')
+            outbound['password'] = p.get('password', '')
+        elif ptype == 'vmess':
+            outbound['type'] = 'vmess'
+            outbound['uuid'] = p.get('uuid', '')
+            outbound['alter_id'] = p.get('alterId', 0)
+            outbound['security'] = p.get('cipher', 'auto')
+            outbound['network'] = p.get('network', 'tcp')
+            if p.get('tls'):
+                outbound['tls'] = {'enabled': True}
+        elif ptype == 'vless':
+            outbound['type'] = 'vless'
+            outbound['uuid'] = p.get('uuid', '')
+            outbound['network'] = p.get('network', 'tcp')
+            if p.get('flow'):
+                outbound['flow'] = p.get('flow')
+            if p.get('tls'):
+                outbound['tls'] = {'enabled': True}
+        elif ptype == 'trojan':
+            password = p.get('password', '')
+            if not password:
+                continue
+            outbound['type'] = 'trojan'
+            outbound['password'] = password
+            outbound['tls'] = {'enabled': True, 'server_name': p.get('sni', server)}
+        elif ptype in ('hysteria2', 'hy2'):
+            outbound['type'] = 'hysteria2'
+            outbound['password'] = p.get('password', '')
+            outbound['tls'] = {'enabled': True, 'server_name': p.get('sni', server)}
+        else:
+            continue
+
+        outbounds.append(outbound)
+
+    print(json.dumps(outbounds, indent=2))
+
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    print(json.dumps([]))
+PYTHON
 }
 
-# Generate sing-box config using Python
 generate_config() {
     local proxies_json="$1"
     local config_file="$2"
 
     mkdir -p "$(dirname "$config_file")"
 
-    python3 << 'EOF'
-import json, sys
+    python3 - "$proxies_json" "$SOCKS_PORT" "$HTTP_PORT" "$API_PORT" "$config_file" << 'PYTHON'
+import sys, json
+
+proxies_json = sys.argv[1]
+socks_port = int(sys.argv[2])
+http_port = int(sys.argv[3])
+api_port = int(sys.argv[4])
+config_file = sys.argv[5]
 
 try:
-    proxies = json.loads('''$proxies_json''')
-    if isinstance(proxies, str):
-        proxies = json.loads(proxies)
-
+    proxies = json.loads(proxies_json)
     if not proxies:
         print("No valid proxies found", file=sys.stderr)
-        exit(1)
+        sys.exit(1)
 
     tags = [p['tag'] for p in proxies]
     first_tag = tags[0] if tags else 'proxy'
@@ -212,8 +275,8 @@ try:
     config = {
         "log": {"level": "warn"},
         "inbounds": [
-            {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": $SOCKS_PORT},
-            {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": $HTTP_PORT}
+            {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": socks_port},
+            {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": http_port}
         ],
         "outbounds": [
             {"type": "direct", "tag": "direct"},
@@ -232,22 +295,22 @@ try:
         },
         "experimental": {
             "clash_api": {
-                "external_controller": "127.0.0.1:$API_PORT"
+                "external_controller": f"127.0.0.1:{api_port}"
             }
         }
     }
 
-    with open('$config_file', 'w') as f:
+    with open(config_file, 'w') as f:
         json.dump(config, f, indent=2)
+
 except Exception as e:
     print(f"Error generating config: {e}", file=sys.stderr)
-    exit(1)
-EOF
+    sys.exit(1)
+PYTHON
 
     log_info "Config written to $config_file"
 }
 
-# Main
 main() {
     check_singbox || exit 1
 
@@ -269,6 +332,11 @@ main() {
         exit 1
     fi
 
+    if ! command -v python3 &> /dev/null; then
+        log_error "python3 is required"
+        exit 1
+    fi
+
     local content=$(fetch_subscription "$url")
     if [ -z "$content" ]; then
         log_error "Failed to fetch subscription"
@@ -277,47 +345,40 @@ main() {
 
     content=$(decode_content "$content")
 
-    local proxies_json="[]"
-
     # Check for Clash YAML format
-    if echo "$content" | head -10 | grep -q 'proxies:'; then
-        log_info "Detected Clash YAML format"
+    if ! echo "$content" | head -10 | grep -q 'proxies:'; then
+        log_error "Unsupported subscription format"
+        log_info "Please use Clash YAML format subscriptions"
+        exit 1
+    fi
+
+    # Check for python3 and pyyaml or yq
+    if command -v yq &> /dev/null; then
+        # Use yq for parsing
+        log_info "Parsing Clash YAML subscription (using yq)"
+        proxies_json=$(echo "$content" | yq '.proxies // []' -o=json -I=0 2>/dev/null | parse_clash_proxies_yq)
+    elif python3 -c "import yaml" 2>/dev/null; then
+        # Use python3 with PyYAML
+        log_info "Parsing Clash YAML subscription (using python3)"
         proxies_json=$(parse_clash_yaml "$content")
     else
-        log_info "Detected URI list format"
-        log_warn "URI list parsing not yet implemented"
-        proxies_json="[]"
-    fi
-
-    if ! command -v jq &> /dev/null; then
-        log_error "jq is required. Install with: brew install jq"
+        log_error "No YAML parser found"
+        log_info "Install either:"
+        log_info "  - yq: https://github.com/mikefarah/yq"
+        log_info "  - PyYAML: pip install pyyaml"
         exit 1
     fi
 
-    if ! command -v python3 &> /dev/null; then
-        log_error "python3 is required. Install with your system package manager"
-        exit 1
-    fi
-
-    # Collect proxies into array
-    local result="["
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        result+="$line,"
-    done <<< "$proxies_json"
-    result="${result%,}]"
-
-    local proxy_count=$(echo "$result" | jq 'length')
+    local proxy_count=$(echo "$proxies_json" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
     log_info "Found $proxy_count proxies"
 
     if [ "$proxy_count" -eq 0 ]; then
-        log_error "No proxies found in subscription"
-        log_info "Check your subscription URL and ensure it returns Clash YAML format"
+        log_error "No valid proxies found in subscription"
         exit 1
     fi
 
-    echo "$result" > "$PROXY_CACHE"
-    generate_config "$result" "$CONFIG_FILE"
+    echo "$proxies_json" > "$PROXY_CACHE"
+    generate_config "$proxies_json" "$CONFIG_FILE"
 
     log_info "Starting sing-box..."
     sing-box run -c "$CONFIG_FILE" &
