@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub config_dir: PathBuf,
     pub subscriptions_file: PathBuf,
     pub singbox_config_dir: PathBuf,
+    pub proxy_cache_file: PathBuf,
 }
 
 impl Default for AppConfig {
@@ -23,11 +24,13 @@ impl Default for AppConfig {
         let config_dir = base_config.join("singboxer");
         let subscriptions_file = config_dir.join("subscriptions.json");
         let singbox_config_dir = base_config.join("sing-box");
+        let proxy_cache_file = config_dir.join("proxy_cache.json");
 
         Self {
             config_dir,
             subscriptions_file,
             singbox_config_dir,
+            proxy_cache_file,
         }
     }
 }
@@ -66,6 +69,32 @@ impl AppConfig {
             .context("Failed to write subscriptions file")?;
 
         Ok(())
+    }
+
+    /// Save proxy list to cache file
+    pub fn save_proxy_cache(&self, proxies: &[ProxyServer]) -> Result<()> {
+        let content = serde_json::to_string_pretty(proxies)
+            .context("Failed to serialize proxy cache")?;
+
+        fs::write(&self.proxy_cache_file, content)
+            .context("Failed to write proxy cache file")?;
+
+        Ok(())
+    }
+
+    /// Load proxy list from cache file
+    pub fn load_proxy_cache(&self) -> Result<Vec<ProxyServer>> {
+        if !self.proxy_cache_file.exists() {
+            return Ok(Vec::new());
+        }
+
+        let content = fs::read_to_string(&self.proxy_cache_file)
+            .context("Failed to read proxy cache file")?;
+
+        let proxies: Vec<ProxyServer> = serde_json::from_str(&content)
+            .context("Failed to parse proxy cache")?;
+
+        Ok(proxies)
     }
 }
 

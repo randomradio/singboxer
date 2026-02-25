@@ -384,20 +384,30 @@ async fn command_select(identifier: String) -> Result<()> {
         return Ok(());
     }
 
-    // Get all proxies
+    // Get all proxies from cache (to avoid network issues when TUN is active)
     let config = get_config()?;
-    let subs = config.load_subscriptions()?;
-    let mut all_proxies: Vec<singboxer::ProxyServer> = Vec::new();
+    let mut all_proxies = config.load_proxy_cache()?;
 
-    for sub in &subs {
-        if !sub.enabled {
-            continue;
-        }
-        if let Ok(content) = singboxer::fetch_subscription(&sub.url).await {
-            if let Ok(proxies) = singboxer::App::parse_subscription_content(&content, sub) {
-                all_proxies.extend(proxies);
+    // If cache is empty, fall back to fetching (may fail if TUN is active)
+    if all_proxies.is_empty() {
+        eprintln!("Warning: Proxy cache is empty. Trying to fetch from subscriptions...");
+        let subs = config.load_subscriptions()?;
+        for sub in &subs {
+            if !sub.enabled {
+                continue;
+            }
+            if let Ok(content) = singboxer::fetch_subscription(&sub.url).await {
+                if let Ok(proxies) = singboxer::App::parse_subscription_content(&content, sub) {
+                    all_proxies.extend(proxies);
+                }
             }
         }
+    }
+
+    if all_proxies.is_empty() {
+        eprintln!("Error: No proxies available.");
+        eprintln!("Try restarting sing-box with: singboxer restart");
+        return Ok(());
     }
 
     // First, try to parse as numeric index
@@ -500,6 +510,9 @@ async fn command_start(no_tun: bool) -> Result<()> {
 
     // Get last selected proxy from state
     let selected = get_last_selected_proxy().await;
+
+    // Save proxy list to cache for use by 'select' command
+    config.save_proxy_cache(&all_proxies)?;
 
     // Generate config
     let singbox_config = singboxer::generate_singbox_config(&all_proxies, selected.as_deref(), no_tun)?;
