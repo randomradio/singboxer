@@ -219,6 +219,62 @@ pub fn parse_clash_yaml(content: &str) -> Result<Vec<ProxyServer>> {
     Ok(servers)
 }
 
+/// Validate if a server address looks like a real host
+/// Filters out invalid entries like UUID fragments, metadata, etc.
+fn is_valid_server(server: &str) -> bool {
+    if server.is_empty() || server == "unknown" {
+        return false;
+    }
+
+    // Must contain at least one dot (domain) or be a valid IP
+    // This filters out UUID fragments like "e62004d7-ff.2nvx.com" which have dots but are not real hosts
+    if !server.contains('.') {
+        return false;
+    }
+
+    // Filter out common metadata patterns that shouldn't be servers
+    let metadata_patterns = [
+        "当前", "剩余", "套餐", "流量", "到期", "重置", "网址", "url", "update",
+        "expire", "traffic", "reset", "website",
+    ];
+
+    let server_lower = server.to_lowercase();
+    for pattern in &metadata_patterns {
+        if server_lower.contains(pattern) {
+            return false;
+        }
+    }
+
+    // Server should not start with a hex-like pattern (common in UUID fragments)
+    // e.g., "e62004d7-ff." or similar
+    if server.len() < 5 {
+        return false;
+    }
+
+    // Check if it looks like a valid domain (has TLD)
+    // after the last dot should be 2-6 chars (TLD)
+    if let Some(last_dot) = server.rfind('.') {
+        let tld = &server[last_dot + 1..];
+        if tld.len() < 2 || tld.len() > 10 {
+            return false;
+        }
+        // TLD should be alphabetic
+        if !tld.chars().all(|c| c.is_alphabetic()) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Validate if a port number is reasonable for a proxy
+fn is_valid_port(port: u16) -> bool {
+    // Valid proxy ports are typically 1-65535, but we filter out:
+    // - 0 (invalid)
+    // - Very low ports (< 80) which are unlikely for proxies
+    port > 0 && port >= 80
+}
+
 /// Parse a single Clash proxy
 fn parse_clash_proxy(proxy: &serde_yaml::Value) -> Result<ProxyServer> {
     let proxy_type = proxy
@@ -233,6 +289,16 @@ fn parse_clash_proxy(proxy: &serde_yaml::Value) -> Result<ProxyServer> {
         .unwrap_or("Unnamed")
         .to_string();
 
+    // Skip metadata/placeholder entries based on name patterns
+    let name_lower = name.to_lowercase();
+    let metadata_keywords = ["当前", "剩余", "套餐", "流量", "到期", "重置", "网址", "url", "update",
+                             "expire", "traffic", "reset", "website", "使用", "过期"];
+    for keyword in &metadata_keywords {
+        if name_lower.contains(keyword) || name.contains(keyword) {
+            return Err(anyhow::anyhow!("Skipping metadata entry: {}", name));
+        }
+    }
+
     let server = proxy
         .get("server")
         .and_then(|v| v.as_str())
@@ -243,6 +309,15 @@ fn parse_clash_proxy(proxy: &serde_yaml::Value) -> Result<ProxyServer> {
         .get("port")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u16;
+
+    // Validate server and port
+    if !is_valid_server(&server) {
+        return Err(anyhow::anyhow!("Invalid server address: {}", server));
+    }
+
+    if !is_valid_port(port) {
+        return Err(anyhow::anyhow!("Invalid port: {}", port));
+    }
 
     // Extract country from name if present (e.g., "HK | 01" -> "HK")
     let country = extract_country_from_name(&name);
@@ -361,11 +436,17 @@ fn parse_clash_proxy(proxy: &serde_yaml::Value) -> Result<ProxyServer> {
             })
         }
         "trojan" => {
+            let password = proxy.get("password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // Validate password - Trojan requires a non-empty password
+            if password.is_empty() {
+                return Err(anyhow::anyhow!("Trojan proxy missing password"));
+            }
+
             let config = ProxyConfig::Trojan(TrojanConfig {
-                password: proxy.get("password")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                password: password.to_string(),
                 transport: proxy.get("network")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
